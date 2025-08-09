@@ -206,10 +206,12 @@ async def send_tomorrow_schedule(update: Update, context: ContextTypes.DEFAULT_T
                 time_str = start_time
             event_lines.append(f"{time_str} - {summary} (משך: {duration} דקות)")
 
-        # Load prompt
+        # Load prompt and inject today's date
+        today_str = datetime.now().strftime("%d/%m/%Y")
         with open("summarize_schedule_prompt.txt", "r", encoding="utf-8") as f:
-            prompt = f.read()
-        full_prompt = prompt + "\n" + "\n".join(event_lines)
+            prompt_template = f.read()
+        prompt = prompt_template.replace("[תוסיף כאן תאריך של היום]", today_str)
+        full_prompt = prompt + "\n" + "\n\n".join(event_lines)
 
         # GPT call
         client = OpenAI(api_key=OPENAI_API_KEY)
@@ -220,6 +222,7 @@ async def send_tomorrow_schedule(update: Update, context: ContextTypes.DEFAULT_T
         )
 
         summary_text = response.choices[0].message.content
+        summary_text = summary_text.replace("\n- ", "\n\n- ").strip()
         await update.message.reply_text(summary_text)
 
     except Exception as e:
