@@ -36,6 +36,17 @@ def render_message(key, **kwargs):
     return template.format(**kwargs)
 
 
+def time_date_strings(start_str: str):
+    try:
+        dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+    except ValueError:
+        return start_str, start_str
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    local = dt.astimezone()
+    return local.strftime("%H:%M"), local.strftime("%d/%m")
+
+
 def within_next_24h(start_str: str) -> bool:
     try:
         if "T" in start_str:
@@ -247,15 +258,30 @@ async def check_event_changes(context: ContextTypes.DEFAULT_TYPE):
             tracked[ev_id] = {"updated": updated, "summary": summary, "start": start}
         else:
             if tracked[ev_id]["updated"] != updated:
+                old_time, old_date = time_date_strings(tracked[ev_id]["start"])
+                new_time, new_date = time_date_strings(start)
                 tracked[ev_id] = {"updated": updated, "summary": summary, "start": start}
-                msg = render_message("event_updated", summary=summary, start_time=start)
+                msg = render_message(
+                    "event_updated",
+                    summary=summary,
+                    old_time=old_time,
+                    old_date=old_date,
+                    new_time=new_time,
+                    new_date=new_date,
+                )
                 await context.bot.send_message(chat_id=chat_id, text=msg)
 
     removed = [eid for eid in list(tracked.keys()) if eid not in current_ids]
     for eid in removed:
         info = tracked.pop(eid)
         if within_next_24h(info["start"]):
-            msg = render_message("event_deleted", summary=info["summary"], start_time=info["start"])
+            old_time, old_date = time_date_strings(info["start"])
+            msg = render_message(
+                "event_deleted",
+                summary=info["summary"],
+                old_time=old_time,
+                old_date=old_date,
+            )
             await context.bot.send_message(chat_id=chat_id, text=msg)
 
 

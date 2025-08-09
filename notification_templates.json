@@ -1,4 +1,4 @@
 {
-  "event_updated": "🔄 האירוע '{summary}' שתוכנן ל-{start_time} עודכן.",
-  "event_deleted": "❌ האירוע '{summary}' שתוכנן ל-{start_time} בוטל."
+  "event_updated": "🔄 שימו לב! המופע '{summary}' זז מ{old_time} ב{old_date} ל{new_time} ב{new_date}",
+  "event_deleted": "❌ שימו לב! המופע '{summary}' שהיה אמור להתקיים ב{old_time} ב{old_date} בוטל"
 }
