@@ -131,15 +131,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         service = authenticate_google_calendar()
 
+        if action == "summarize":
+            await send_tomorrow_schedule(update, context)
+            return
+
         if action in ("create", "update") and not label:
             context.user_data["pending_event"] = {
                 "action": action, "summary": summary, "start": start_time, "duration": duration
             }
             await update.message.reply_text(f"לא זיהיתי תגית. בחר אחת: {', '.join(all_labels())}")
-            return
-
-        if action == "summarize":
-            await send_tomorrow_schedule(update, context)
             return
 
         if action == "create":
