@@ -8,7 +8,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from openai import OpenAI
 
 from create_event import (
@@ -44,7 +44,10 @@ def within_next_24h(start_str: str) -> bool:
             dt = datetime.fromisoformat(start_str)
     except ValueError:
         return False
-    diff = (dt - datetime.utcnow()).total_seconds()
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt_utc = dt.astimezone(timezone.utc)
+    diff = (dt_utc - datetime.now(timezone.utc)).total_seconds()
     return 0 <= diff <= 24 * 3600
 
 
