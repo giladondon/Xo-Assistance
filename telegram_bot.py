@@ -27,8 +27,29 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+with open("notification_templates.json", "r", encoding="utf-8") as f:
+    TEMPLATES = json.load(f)
+
+
+def render_message(key, **kwargs):
+    template = TEMPLATES.get(key, "")
+    return template.format(**kwargs)
+
+
+def within_next_24h(start_str: str) -> bool:
+    try:
+        if "T" in start_str:
+            dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+        else:
+            dt = datetime.fromisoformat(start_str)
+    except ValueError:
+        return False
+    diff = (dt - datetime.utcnow()).total_seconds()
+    return 0 <= diff <= 24 * 3600
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.bot_data.setdefault("chat_id", update.effective_chat.id)
     text = update.message.text
     await update.message.reply_text("🧠 מעבד את הפקודה...")
 
@@ -191,11 +212,55 @@ async def send_tomorrow_schedule(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(f"❌ שגיאה: {str(e)}")
 
 
+async def check_event_changes(context: ContextTypes.DEFAULT_TYPE):
+    chat_id = context.bot_data.get("chat_id")
+    if not chat_id:
+        return
+
+    service = authenticate_google_calendar()
+    now = datetime.utcnow()
+    time_min = now.isoformat() + "Z"
+    time_max = (now + timedelta(hours=24)).isoformat() + "Z"
+
+    events_result = service.events().list(
+        calendarId="primary",
+        timeMin=time_min,
+        timeMax=time_max,
+        singleEvents=True,
+        orderBy="startTime",
+    ).execute()
+
+    events = events_result.get("items", [])
+    tracked = context.bot_data.setdefault("tracked_events", {})
+    current_ids = set()
+
+    for ev in events:
+        ev_id = ev["id"]
+        current_ids.add(ev_id)
+        start = ev["start"].get("dateTime", ev["start"].get("date"))
+        summary = ev.get("summary", "ללא כותרת")
+        updated = ev.get("updated")
+        if ev_id not in tracked:
+            tracked[ev_id] = {"updated": updated, "summary": summary, "start": start}
+        else:
+            if tracked[ev_id]["updated"] != updated:
+                tracked[ev_id] = {"updated": updated, "summary": summary, "start": start}
+                msg = render_message("event_updated", summary=summary, start_time=start)
+                await context.bot.send_message(chat_id=chat_id, text=msg)
+
+    removed = [eid for eid in list(tracked.keys()) if eid not in current_ids]
+    for eid in removed:
+        info = tracked.pop(eid)
+        if within_next_24h(info["start"]):
+            msg = render_message("event_deleted", summary=info["summary"], start_time=info["start"])
+            await context.bot.send_message(chat_id=chat_id, text=msg)
+
 
 def main():
     LABELS = load_contacts("tag_contacts.xlsx")  # loads and caches labels & emails
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.job_queue.run_repeating(check_event_changes, interval=60, first=10)
     print("🤖 הבוט מחובר לטלגרם ומחכה להודעות...")
     app.run_polling()
 

@@ -1,0 +1,4 @@
+{
+  "event_updated": "🔄 האירוע '{summary}' שתוכנן ל-{start_time} עודכן.",
+  "event_deleted": "❌ האירוע '{summary}' שתוכנן ל-{start_time} בוטל."
+}
