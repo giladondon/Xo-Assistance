@@ -11,15 +11,15 @@ LABEL_TO_COLOR = {
 }
 
 COLORID_TO_EMOJI = {
-    "1": "",  # lavender
-    "2": "",  # peacock
-    "3": "",  # purple
-    "6": "",  # orange
-    "7": "",  # cyan
-    "8": "",  # graphite
-    "9": "",  # blueberry
-    "10": "", # basil green
-    "11": "", # red
+    "1": "🐳",  # lavender
+    "2": "🔱",  # peacock
+    "3": "📐",  # purple
+    "6": "⚙️",  # orange
+    "7": "🤿",  # cyan
+    "8": "🎱",  # graphite
+    "9": "👂🏼",  # blueberry
+    "10": "⚔️", # basil green
+    "11": "🧑🏼‍💻", # red
 }
 
 
