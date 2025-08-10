@@ -69,7 +69,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🧠 מעבד את הפקודה...")
 
     # Extract label specified with @label and strip it from the text
-    match = re.search(r"@(\S+)", text)
+    # Allow Hebrew letters and digits, stopping before punctuation/whitespace
+    match = re.search(r"@([\w\u0590-\u05FF]+)", text)
     label = match.group(1) if match else None
     if match:
         text = (text[:match.start()] + text[match.end():]).strip()
@@ -77,8 +78,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending = context.user_data.get("pending_event")
     if pending:
         chosen = update.message.text.strip()
+        # Allow user to reply with or without '@' and ignore trailing text
+        if chosen.startswith("@"):
+            chosen = chosen[1:]
+        chosen = chosen.split()[0]
         if chosen not in all_labels():
-            await update.message.reply_text(f"תגית לא מוכרת. נסה אחת מ: {', '.join(all_labels())}")
+            await update.message.reply_text(
+                f"תגית לא מוכרת. נסה אחת מ: {', '.join(all_labels())}"
+            )
             return
         service = authenticate_google_calendar()
         if pending["action"] == "create":
