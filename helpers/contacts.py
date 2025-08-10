@@ -55,7 +55,8 @@ def load_contacts(path="tag_contacts.xlsx"):
 
     _CONTACTS = df
     _LABEL_EMAILS = grouped
-    _LABELS = sorted([k for k, v in grouped.items() if v])
+    # include all labels even if they have no emails (e.g. "טכנית")
+    _LABELS = sorted(grouped.keys())
     return _LABELS
 
 def emails_for_label(label: str):

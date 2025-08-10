@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
@@ -20,7 +21,7 @@ from create_event import (
 )
 
 from helpers.contacts import load_contacts, all_labels, emails_for_label
-from helpers.colors import color_for_label
+from helpers.colors import color_for_label, emoji_for_color
 
 load_dotenv()
 
@@ -66,6 +67,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data.setdefault("chat_id", update.effective_chat.id)
     text = update.message.text
     await update.message.reply_text("🧠 מעבד את הפקודה...")
+
+    # Extract label specified with @label and strip it from the text
+    match = re.search(r"@(\S+)", text)
+    label = match.group(1) if match else None
+    if match:
+        text = (text[:match.start()] + text[match.end():]).strip()
 
     pending = context.user_data.get("pending_event")
     if pending:
@@ -127,7 +134,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         summary = data.get("summary")
         start_time = data.get("start_time")
         duration = data.get("duration_minutes", 60)
-        label = (data.get("label") or "").strip()
 
         service = authenticate_google_calendar()
 
@@ -135,7 +141,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_tomorrow_schedule(update, context)
             return
 
-        if action in ("create", "update") and not label:
+        if action in ("create", "update") and (not label or label not in all_labels()):
             context.user_data["pending_event"] = {
                 "action": action, "summary": summary, "start": start_time, "duration": duration
             }
@@ -191,8 +197,9 @@ async def send_tomorrow_schedule(update: Update, context: ContextTypes.DEFAULT_T
             await update.message.reply_text("📭 אין אירועים מחר.")
             return
 
-        # Format event list
+        # Format event list and collect color emojis
         event_lines = []
+        event_emojis = []
         for event in events:
             summary = event.get("summary", "ללא כותרת")
             start_time = event["start"].get("dateTime", event["start"].get("date"))
@@ -205,6 +212,7 @@ async def send_tomorrow_schedule(update: Update, context: ContextTypes.DEFAULT_T
             else:
                 time_str = start_time
             event_lines.append(f"{time_str} - {summary} (משך: {duration} דקות)")
+            event_emojis.append(emoji_for_color(event.get("colorId")))
 
         # Load prompt and inject today's date
         today_str = datetime.now().strftime("%d/%m/%Y")
@@ -223,6 +231,17 @@ async def send_tomorrow_schedule(update: Update, context: ContextTypes.DEFAULT_T
 
         summary_text = response.choices[0].message.content
         summary_text = summary_text.replace("\n- ", "\n\n- ").strip()
+
+        # Append color emoji to each bullet line
+        lines = summary_text.splitlines()
+        idx = 0
+        for i, line in enumerate(lines):
+            if line.strip().startswith("-") and idx < len(event_emojis):
+                emoji = event_emojis[idx]
+                if emoji:
+                    lines[i] = f"{line} {emoji}"
+                idx += 1
+        summary_text = "\n".join(lines)
         await update.message.reply_text(summary_text)
 
     except Exception as e:
