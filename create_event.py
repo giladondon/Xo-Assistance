@@ -16,6 +16,7 @@ from helpers.contacts import emails_for_label
 # Define Google Calendar Access Scope
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 TOKEN_DIR = Path("tokens")
+REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
 
 #Set-Up OPENAI API
 load_dotenv()
@@ -48,8 +49,9 @@ def authenticate_google_calendar(user_id: int | None = None):
 
 def start_auth_flow():
     """Create an OAuth flow and return the authorization URL and flow object."""
+    kwargs = {"redirect_uri": REDIRECT_URI} if REDIRECT_URI else {}
     flow = InstalledAppFlow.from_client_secrets_file(
-        "credentials.json", SCOPES
+        "credentials.json", SCOPES, **kwargs
     )
     auth_url, _ = flow.authorization_url(prompt="consent")
     return auth_url, flow
@@ -57,7 +59,10 @@ def start_auth_flow():
 
 def finish_auth_flow(user_id: int, flow: InstalledAppFlow, code: str):
     """Complete OAuth flow using the provided code and store credentials."""
-    flow.fetch_token(code=code)
+    if REDIRECT_URI:
+        flow.fetch_token(code=code, redirect_uri=REDIRECT_URI)
+    else:
+        flow.fetch_token(code=code)
     creds = flow.credentials
     TOKEN_DIR.mkdir(exist_ok=True)
     token_path = TOKEN_DIR / f"token_{user_id}.json"
