@@ -18,6 +18,8 @@ from create_event import (
     find_event,
     delete_event,
     update_event,
+    start_auth_flow,
+    finish_auth_flow,
 )
 
 from helpers.contacts import load_contacts, all_labels, emails_for_label
@@ -65,11 +67,31 @@ def within_next_24h(start_str: str) -> bool:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data.setdefault("chat_id", update.effective_chat.id)
+    user_id = update.effective_user.id
     text = update.message.text
+
+    service = authenticate_google_calendar(user_id)
+    if not service:
+        pending_flow = context.user_data.get("auth_flow")
+        if pending_flow:
+            code = text.strip()
+            try:
+                service = finish_auth_flow(user_id, pending_flow, code)
+                context.user_data.pop("auth_flow", None)
+                await update.message.reply_text("✅ ההרשאה הושלמה! שלח את הפקודה שוב.")
+            except Exception as e:
+                await update.message.reply_text(f"❌ שגיאה בתהליך ההרשאה: {e}")
+            return
+        else:
+            auth_url, flow = start_auth_flow()
+            context.user_data["auth_flow"] = flow
+            await update.message.reply_text(
+                f"👋 כדי להשתמש בבוט יש לאשר גישה ליומן:\n{auth_url}\nשלח לי את הקוד שתקבל אחרי האישור."
+            )
+            return
+
     await update.message.reply_text("🧠 מעבד את הפקודה...")
 
-    # Extract label specified with @label and strip it from the text
-    # Allow Hebrew letters and digits, stopping before punctuation/whitespace
     match = re.search(r"@([\w\u0590-\u05FF]+)", text)
     label = match.group(1) if match else None
     if match:
@@ -78,7 +100,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending = context.user_data.get("pending_event")
     if pending:
         chosen = update.message.text.strip()
-        # Allow user to reply with or without '@' and ignore trailing text
         if chosen.startswith("@"):
             chosen = chosen[1:]
         chosen = chosen.split()[0]
@@ -87,17 +108,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"תגית לא מוכרת. נסה אחת מ: {', '.join(all_labels())}"
             )
             return
-        service = authenticate_google_calendar()
         if pending["action"] == "create":
             create_event(service, pending["summary"], pending["start"], pending["duration"], chosen)
             await update.message.reply_text("✅ אירוע נוצר עם התגית, צבע והזמנות נשלחו.")
         else:
-            # update flow: fuzzy find, update time/summary, then patch attendees/color
-            ev = find_event(service, pending["summary"])  # use your fuzzy finder
+            ev = find_event(service, pending["summary"])
             if not ev:
                 await update.message.reply_text("❌ לא נמצא אירוע לעדכון.")
             else:
-                # update existing fields you already support:
                 updates = {
                     "summary": pending["summary"],
                     "start_time": pending["start"],
@@ -106,9 +124,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 update_event(service, ev["id"], updates)
                 patch = {}
                 ems = emails_for_label(chosen)
-                if ems: patch["attendees"] = [{"email": e} for e in ems]
+                if ems:
+                    patch["attendees"] = [{"email": e} for e in ems]
                 cid = color_for_label(chosen)
-                if cid: patch["colorId"] = cid
+                if cid:
+                    patch["colorId"] = cid
                 if patch:
                     service.events().patch(
                         calendarId="primary", eventId=ev["id"], body=patch, sendUpdates="all"
@@ -117,7 +137,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("pending_event", None)
         return
 
-    # Build prompt
     with open("xo_assistance_prompt.txt", "r", encoding="utf-8") as f:
         base = f.read()
     system_prompt = base.replace("{LABELS}", ", ".join(all_labels()))
@@ -125,7 +144,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today = datetime.now().strftime("%Y-%m-%d")
 
     try:
-        # GPT call
         client = OpenAI(api_key=OPENAI_API_KEY)
         resp = client.chat.completions.create(
             model="gpt-4",
@@ -142,15 +160,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         start_time = data.get("start_time")
         duration = data.get("duration_minutes", 60)
 
-        service = authenticate_google_calendar()
-
         if action == "summarize":
-            await send_tomorrow_schedule(update, context)
+            await send_tomorrow_schedule(update, context, service)
             return
 
         if action in ("create", "update") and (not label or label not in all_labels()):
             context.user_data["pending_event"] = {
-                "action": action, "summary": summary, "start": start_time, "duration": duration
+                "action": action, "summary": summary, "start": start_time, "duration": duration,
             }
             await update.message.reply_text(f"לא זיהיתי תגית. בחר אחת: {', '.join(all_labels())}")
             return
@@ -182,9 +198,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ שגיאה: {str(e)}")
 
 
-async def send_tomorrow_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def send_tomorrow_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, service):
     try:
-        service = authenticate_google_calendar()
 
         # Get tomorrow's range
         tomorrow = datetime.utcnow() + timedelta(days=1)

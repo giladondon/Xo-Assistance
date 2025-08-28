@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 import re
 import os
 import json
+from pathlib import Path
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -14,30 +15,55 @@ from helpers.contacts import emails_for_label
 
 # Define Google Calendar Access Scope
 SCOPES = ['https://www.googleapis.com/auth/calendar']
+TOKEN_DIR = Path("tokens")
 
 #Set-Up OPENAI API
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Authenticate with Google
-def authenticate_google_calendar():
-    creds = None
-    if os.path.exists("token.json"):
-        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+def authenticate_google_calendar(user_id: int | None = None):
+    """Return an authenticated Google Calendar service for the given user.
 
-    if not creds or not creds.valid:
+    If ``user_id`` is ``None`` the legacy single-user token is used.
+    Otherwise the token is loaded from ``tokens/token_<user_id>.json``.
+    When no token is found ``None`` is returned.
+    """
+    if user_id is None:
+        token_path = Path("token.json")
+    else:
+        TOKEN_DIR.mkdir(exist_ok=True)
+        token_path = TOKEN_DIR / f"token_{user_id}.json"
+
+    creds = None
+    if token_path.exists():
+        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
-            creds = flow.run_local_server(port=0)
 
-        with open("token.json", "w") as token:
-            token.write(creds.to_json())
+    if not creds:
+        return None
 
-    # ✅ זה מה שיוצר את השירות, לא את ההרשאה
-    service = build('calendar', 'v3', credentials=creds)
-    return service
+    return build('calendar', 'v3', credentials=creds)
+
+
+def start_auth_flow():
+    """Create an OAuth flow and return the authorization URL and flow object."""
+    flow = InstalledAppFlow.from_client_secrets_file(
+        "credentials.json", SCOPES
+    )
+    auth_url, _ = flow.authorization_url(prompt="consent")
+    return auth_url, flow
+
+
+def finish_auth_flow(user_id: int, flow: InstalledAppFlow, code: str):
+    """Complete OAuth flow using the provided code and store credentials."""
+    flow.fetch_token(code=code)
+    creds = flow.credentials
+    TOKEN_DIR.mkdir(exist_ok=True)
+    token_path = TOKEN_DIR / f"token_{user_id}.json"
+    with open(token_path, "w") as token_file:
+        token_file.write(creds.to_json())
+    return build('calendar', 'v3', credentials=creds)
 
 # Create an Event
 def create_event(service, summary, start_time_str, duration_minutes=60, label=""):
@@ -118,7 +144,6 @@ def update_event(service, event_id, updates):
         event['summary'] = updates['summary']
 
     if "start_time" in updates:
-        from datetime import datetime, timedelta
         start = datetime.strptime(updates["start_time"], "%Y-%m-%d %H:%M")
         end = start + timedelta(minutes=updates.get("duration_minutes", 60))
         event['start'] = {"dateTime": start.isoformat(), "timeZone": "Asia/Jerusalem"}
@@ -147,7 +172,7 @@ def parse_with_gpt(text):
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"התאריך היום הוא {today}. הפקודה היא: {text}"}
-        ]
+        ],
     )
 
     response_text = response.choices[0].message.content
