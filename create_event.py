@@ -13,13 +13,14 @@ from dotenv import load_dotenv
 from helpers.colors import color_for_label
 from helpers.contacts import emails_for_label
 
+load_dotenv()
+
 # Define Google Calendar Access Scope
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 TOKEN_DIR = Path("tokens")
 REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
 
-#Set-Up OPENAI API
-load_dotenv()
+# Set up OPENAI API
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def authenticate_google_calendar(user_id: int | None = None):
