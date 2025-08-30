@@ -18,7 +18,7 @@ load_dotenv()
 # Define Google Calendar Access Scope
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 TOKEN_DIR = Path("tokens")
-REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
+REDIRECT_URI = os.getenv("http://localhost:8080/")
 
 # Set up OPENAI API
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
