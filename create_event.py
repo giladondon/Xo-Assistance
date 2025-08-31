@@ -94,7 +94,12 @@ def finish_auth_flow(user_id: int, flow: InstalledAppFlow, code: str):
         raise RuntimeError(
             "Missing redirect URI. Set GOOGLE_REDIRECT_URI or provide redirect_uris in credentials.json"
         )
-    flow.fetch_token(code=code, redirect_uri=redirect_uri)
+    # The flow already has a redirect URI from ``start_auth_flow``; passing it
+    # again to ``fetch_token`` results in oauthlib receiving duplicate
+    # parameters and raising a ``TypeError``. Ensure the stored redirect URI is
+    # used and fetch the token without re-supplying it.
+    flow.redirect_uri = redirect_uri
+    flow.fetch_token(code=code)
     creds = flow.credentials
     TOKEN_DIR.mkdir(exist_ok=True)
     token_path = TOKEN_DIR / f"token_{user_id}.json"
