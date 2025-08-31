@@ -1,6 +1,8 @@
 import os
 import json
 import re
+from urllib.parse import urlparse, parse_qs
+
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
@@ -75,6 +77,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pending_flow = context.user_data.get("auth_flow")
         if pending_flow:
             code = text.strip()
+            if "code=" in code or code.startswith("http"):
+                try:
+                    parsed = urlparse(code)
+                    code = parse_qs(parsed.query).get("code", [""])[0]
+                except Exception:
+                    code = ""
+            if not code:
+                await update.message.reply_text("❌ לא נמצא קוד הרשאה בהודעה.")
+                return
             try:
                 service = finish_auth_flow(user_id, pending_flow, code)
                 context.user_data.pop("auth_flow", None)
@@ -90,7 +101,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             context.user_data["auth_flow"] = flow
             await update.message.reply_text(
-                f"👋 כדי להשתמש בבוט יש לאשר גישה ליומן:\n{auth_url}\nשלח לי את הקוד שתקבל אחרי האישור."
+                f"👋 כדי להשתמש בבוט יש לאשר גישה ליומן:\n{auth_url}\nשלח לי את הקישור המלא או את הקוד שתקבל אחרי האישור."
             )
             return
 
