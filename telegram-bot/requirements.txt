@@ -1,0 +1,8 @@
+python-telegram-bot
+python-dotenv
+openai
+google-api-python-client
+google-auth
+google-auth-oauthlib
+pandas
+openpyxl

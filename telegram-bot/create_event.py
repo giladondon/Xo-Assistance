@@ -15,9 +15,11 @@ from helpers.contacts import emails_for_label
 
 load_dotenv()
 
+BASE_DIR = Path(__file__).resolve().parent
+
 # Define Google Calendar Access Scope
 SCOPES = ['https://www.googleapis.com/auth/calendar']
-TOKEN_DIR = Path("tokens")
+TOKEN_DIR = BASE_DIR / "tokens"
 
 
 def _resolve_redirect_uri() -> str | None:
@@ -31,7 +33,7 @@ def _resolve_redirect_uri() -> str | None:
     if env_uri:
         return env_uri
     try:
-        with open("credentials.json", "r", encoding="utf-8") as f:
+        with open(BASE_DIR / "credentials.json", "r", encoding="utf-8") as f:
             data = json.load(f)
         for block in ("web", "installed"):
             uris = data.get(block, {}).get("redirect_uris")
@@ -56,7 +58,7 @@ def authenticate_google_calendar(user_id: int | None = None):
     When no token is found ``None`` is returned.
     """
     if user_id is None:
-        token_path = Path("token.json")
+        token_path = BASE_DIR / "token.json"
     else:
         TOKEN_DIR.mkdir(exist_ok=True)
         token_path = TOKEN_DIR / f"token_{user_id}.json"
@@ -81,7 +83,7 @@ def start_auth_flow():
             "Missing redirect URI. Set GOOGLE_REDIRECT_URI or provide redirect_uris in credentials.json"
         )
     flow = InstalledAppFlow.from_client_secrets_file(
-        "credentials.json", SCOPES, redirect_uri=redirect_uri
+        str(BASE_DIR / "credentials.json"), SCOPES, redirect_uri=redirect_uri
     )
     auth_url, _ = flow.authorization_url(prompt="consent")
     return auth_url, flow
@@ -204,7 +206,7 @@ def extract_json(text):
 
 # Parse text with GPT module
 def parse_with_gpt(text):
-    with open("xo_assistance_prompt.txt", "r", encoding="utf-8") as f:
+    with open(BASE_DIR / "xo_assistance_prompt.txt", "r", encoding="utf-8") as f:
         system_prompt = f.read()
 
     today = datetime.today().strftime("%Y-%m-%d")

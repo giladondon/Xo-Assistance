@@ -1,6 +1,7 @@
 import os
 import json
 import re
+from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 from dotenv import load_dotenv
@@ -32,7 +33,9 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-with open("notification_templates.json", "r", encoding="utf-8") as f:
+BASE_DIR = Path(__file__).resolve().parent
+
+with open(BASE_DIR / "notification_templates.json", "r", encoding="utf-8") as f:
     TEMPLATES = json.load(f)
 
 
@@ -152,7 +155,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("pending_event", None)
         return
 
-    with open("xo_assistance_prompt.txt", "r", encoding="utf-8") as f:
+    with open(BASE_DIR / "xo_assistance_prompt.txt", "r", encoding="utf-8") as f:
         base = f.read()
     system_prompt = base.replace("{LABELS}", ", ".join(all_labels()))
 
@@ -253,7 +256,7 @@ async def send_tomorrow_schedule(update: Update, context: ContextTypes.DEFAULT_T
 
         # Load prompt and inject today's date
         today_str = datetime.now().strftime("%d/%m/%Y")
-        with open("summarize_schedule_prompt.txt", "r", encoding="utf-8") as f:
+        with open(BASE_DIR / "summarize_schedule_prompt.txt", "r", encoding="utf-8") as f:
             prompt_template = f.read()
         prompt = prompt_template.replace("[תוסיף כאן תאריך של היום]", today_str)
         full_prompt = prompt + "\n" + "\n\n".join(event_lines)
@@ -345,7 +348,7 @@ async def check_event_changes(context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
-    LABELS = load_contacts("tag_contacts.xlsx")  # loads and caches labels & emails
+    LABELS = load_contacts(BASE_DIR / "tag_contacts.xlsx")  # loads and caches labels & emails
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.job_queue.run_repeating(check_event_changes, interval=60, first=10)

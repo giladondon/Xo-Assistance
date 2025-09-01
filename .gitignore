@@ -2,3 +2,8 @@
 
 credentials.json
 token.json
+telegram-bot/tokens/
+__pycache__/
+*.pyc
+~$*
+.DS_Store
