@@ -16,6 +16,9 @@ from helpers.contacts import emails_for_label
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
+CREDENTIALS_FILE = Path(
+    os.getenv("GOOGLE_CREDENTIALS_FILE", BASE_DIR / "credentials.json")
+)
 
 # Define Google Calendar Access Scope
 SCOPES = ['https://www.googleapis.com/auth/calendar']
@@ -33,7 +36,7 @@ def _resolve_redirect_uri() -> str | None:
     if env_uri:
         return env_uri
     try:
-        with open(BASE_DIR / "credentials.json", "r", encoding="utf-8") as f:
+        with open(CREDENTIALS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         for block in ("web", "installed"):
             uris = data.get(block, {}).get("redirect_uris")
@@ -78,29 +81,22 @@ def authenticate_google_calendar(user_id: int | None = None):
 def start_auth_flow():
     """Create an OAuth flow and return the authorization URL and flow object."""
     redirect_uri = _resolve_redirect_uri()
-    if not redirect_uri:
-        raise RuntimeError(
-            "Missing redirect URI. Set GOOGLE_REDIRECT_URI or provide redirect_uris in credentials.json"
-        )
+    kwargs = {"redirect_uri": redirect_uri} if redirect_uri else {}
     flow = InstalledAppFlow.from_client_secrets_file(
-        str(BASE_DIR / "credentials.json"), SCOPES, redirect_uri=redirect_uri
+        str(CREDENTIALS_FILE), SCOPES, **kwargs
     )
     auth_url, _ = flow.authorization_url(prompt="consent")
     return auth_url, flow
 
-
 def finish_auth_flow(user_id: int, flow: InstalledAppFlow, code: str):
     """Complete OAuth flow using the provided code and store credentials."""
     redirect_uri = _resolve_redirect_uri()
-    if not redirect_uri:
-        raise RuntimeError(
-            "Missing redirect URI. Set GOOGLE_REDIRECT_URI or provide redirect_uris in credentials.json"
-        )
-    # The flow already has a redirect URI from ``start_auth_flow``; passing it
-    # again to ``fetch_token`` results in oauthlib receiving duplicate
-    # parameters and raising a ``TypeError``. Ensure the stored redirect URI is
-    # used and fetch the token without re-supplying it.
-    flow.redirect_uri = redirect_uri
+    if redirect_uri:
+        # The flow already has a redirect URI from ``start_auth_flow``; passing it
+        # again to ``fetch_token`` results in oauthlib receiving duplicate
+        # parameters and raising a ``TypeError``. Ensure the stored redirect URI
+        # is used and fetch the token without re-supplying it.
+        flow.redirect_uri = redirect_uri
     flow.fetch_token(code=code)
     creds = flow.credentials
     TOKEN_DIR.mkdir(exist_ok=True)
@@ -108,7 +104,6 @@ def finish_auth_flow(user_id: int, flow: InstalledAppFlow, code: str):
     with open(token_path, "w") as token_file:
         token_file.write(creds.to_json())
     return build('calendar', 'v3', credentials=creds)
-
 # Create an Event
 def create_event(service, summary, start_time_str, duration_minutes=60, label=""):
     start_time = datetime.strptime(start_time_str, "%Y-%m-%d %H:%M")
