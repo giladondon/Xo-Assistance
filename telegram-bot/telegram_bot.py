@@ -72,7 +72,8 @@ def within_next_24h(start_str: str) -> bool:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data.setdefault("chat_id", update.effective_chat.id)
-    user_id = update.effective_user.id
+    context.bot_data["user_id"] = update.effective_user.id
+    user_id = context.bot_data["user_id"]
     text = update.message.text
 
     service = authenticate_google_calendar(user_id)
@@ -293,58 +294,66 @@ async def check_event_changes(context: ContextTypes.DEFAULT_TYPE):
     if not chat_id:
         return
 
-    service = authenticate_google_calendar()
-    now = datetime.utcnow()
-    time_min = now.isoformat() + "Z"
-    time_max = (now + timedelta(hours=24)).isoformat() + "Z"
+    user_id = context.bot_data.get("user_id")
+    service = authenticate_google_calendar(user_id) if user_id else None
+    if not service:
+        return
 
-    events_result = service.events().list(
-        calendarId="primary",
-        timeMin=time_min,
-        timeMax=time_max,
-        singleEvents=True,
-        orderBy="startTime",
-    ).execute()
+    try:
+        now = datetime.utcnow()
+        time_min = now.isoformat() + "Z"
+        time_max = (now + timedelta(hours=24)).isoformat() + "Z"
 
-    events = events_result.get("items", [])
-    tracked = context.bot_data.setdefault("tracked_events", {})
-    current_ids = set()
+        events_result = service.events().list(
+            calendarId="primary",
+            timeMin=time_min,
+            timeMax=time_max,
+            singleEvents=True,
+            orderBy="startTime",
+        ).execute()
 
-    for ev in events:
-        ev_id = ev["id"]
-        current_ids.add(ev_id)
-        start = ev["start"].get("dateTime", ev["start"].get("date"))
-        summary = ev.get("summary", "ללא כותרת")
-        updated = ev.get("updated")
-        if ev_id not in tracked:
-            tracked[ev_id] = {"updated": updated, "summary": summary, "start": start}
-        else:
-            if tracked[ev_id]["updated"] != updated:
-                old_time, old_date = time_date_strings(tracked[ev_id]["start"])
-                new_time, new_date = time_date_strings(start)
+        events = events_result.get("items", [])
+        tracked = context.bot_data.setdefault("tracked_events", {})
+        current_ids = set()
+
+        for ev in events:
+            ev_id = ev["id"]
+            current_ids.add(ev_id)
+            start = ev["start"].get("dateTime", ev["start"].get("date"))
+            summary = ev.get("summary", "ללא כותרת")
+            updated = ev.get("updated")
+            if ev_id not in tracked:
                 tracked[ev_id] = {"updated": updated, "summary": summary, "start": start}
+            else:
+                if tracked[ev_id]["updated"] != updated:
+                    old_time, old_date = time_date_strings(tracked[ev_id]["start"])
+                    new_time, new_date = time_date_strings(start)
+                    tracked[ev_id] = {"updated": updated, "summary": summary, "start": start}
+                    msg = render_message(
+                        "event_updated",
+                        summary=summary,
+                        old_time=old_time,
+                        old_date=old_date,
+                        new_time=new_time,
+                        new_date=new_date,
+                    )
+                    await context.bot.send_message(chat_id=chat_id, text=msg)
+
+        removed = [eid for eid in list(tracked.keys()) if eid not in current_ids]
+        for eid in removed:
+            info = tracked.pop(eid)
+            if within_next_24h(info["start"]):
+                old_time, old_date = time_date_strings(info["start"])
                 msg = render_message(
-                    "event_updated",
-                    summary=summary,
+                    "event_deleted",
+                    summary=info["summary"],
                     old_time=old_time,
                     old_date=old_date,
-                    new_time=new_time,
-                    new_date=new_date,
                 )
                 await context.bot.send_message(chat_id=chat_id, text=msg)
 
-    removed = [eid for eid in list(tracked.keys()) if eid not in current_ids]
-    for eid in removed:
-        info = tracked.pop(eid)
-        if within_next_24h(info["start"]):
-            old_time, old_date = time_date_strings(info["start"])
-            msg = render_message(
-                "event_deleted",
-                summary=info["summary"],
-                old_time=old_time,
-                old_date=old_date,
-            )
-            await context.bot.send_message(chat_id=chat_id, text=msg)
+    except Exception as e:
+        await context.bot.send_message(chat_id=chat_id, text=f"❌ שגיאה בבדיקת אירועים: {e}")
 
 
 def main():
