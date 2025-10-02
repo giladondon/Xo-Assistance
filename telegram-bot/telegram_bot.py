@@ -7,6 +7,7 @@ from urllib.parse import urlparse, parse_qs
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
     MessageHandler,
     ContextTypes,
@@ -356,11 +357,22 @@ async def check_event_changes(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat_id, text=f"❌ שגיאה בבדיקת אירועים: {e}")
 
 
+def build_application() -> Application:
+    if not TELEGRAM_TOKEN:
+        raise RuntimeError("TELEGRAM_TOKEN is not set")
+
+    load_contacts(BASE_DIR / "tag_contacts.xlsx")  # loads and caches labels & emails
+
+    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+    )
+    application.job_queue.run_repeating(check_event_changes, interval=60, first=10)
+    return application
+
+
 def main():
-    LABELS = load_contacts(BASE_DIR / "tag_contacts.xlsx")  # loads and caches labels & emails
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.job_queue.run_repeating(check_event_changes, interval=60, first=10)
+    app = build_application()
     print("🤖 הבוט מחובר לטלגרם ומחכה להודעות...")
     app.run_polling()
 
