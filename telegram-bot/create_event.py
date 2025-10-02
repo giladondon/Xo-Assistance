@@ -8,6 +8,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 from openai import OpenAI
 from dotenv import load_dotenv
 from helpers.colors import color_for_label
@@ -69,8 +70,21 @@ def authenticate_google_calendar(user_id: int | None = None):
     creds = None
     if token_path.exists():
         creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+        if creds:
+            if creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                except RefreshError:
+                    # Stored credentials are no longer valid; remove the token so a
+                    # new OAuth flow can be initiated.
+                    try:
+                        token_path.unlink()
+                    except OSError:
+                        pass
+                    return None
+            elif creds.expired and not creds.refresh_token:
+                # Cannot refresh without a refresh token; force re-authentication.
+                return None
 
     if not creds:
         return None
