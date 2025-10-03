@@ -214,7 +214,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ פעולה לא מזוהה.")
 
     except Exception as e:
-        await update.message.reply_text(f"❌ שגיאה: {str(e)}")
+        await update.message.reply_text(f"❌ שגיאה")
 
 
 async def send_tomorrow_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, service):
