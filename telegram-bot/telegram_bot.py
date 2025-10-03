@@ -1,9 +1,13 @@
+import asyncio
 import os
 import json
 import re
+import secrets
 from pathlib import Path
+from typing import Dict
 from urllib.parse import urlparse, parse_qs
 
+from aiohttp import web
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
@@ -34,6 +38,12 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 BASE_DIR = Path(__file__).resolve().parent
+
+AUTH_FLOW_TIMEOUT = timedelta(minutes=10)
+PENDING_AUTH: Dict[str, Dict[str, object]] = {}
+
+WEB_HOST = os.getenv("BOT_WEB_HOST", "0.0.0.0")
+WEB_PORT = int(os.getenv("BOT_WEB_PORT", "8080"))
 
 with open(BASE_DIR / "notification_templates.json", "r", encoding="utf-8") as f:
     TEMPLATES = json.load(f)
@@ -70,6 +80,105 @@ def within_next_24h(start_str: str) -> bool:
     return 0 <= diff <= 24 * 3600
 
 
+async def expire_pending_auth(context: ContextTypes.DEFAULT_TYPE):
+    data = context.job.data or {}
+    state = data.get("state")
+    if not state:
+        return
+    pending = PENDING_AUTH.pop(state, None)
+    if not pending:
+        return
+    user_id = pending.get("user_id")
+    chat_id = pending.get("chat_id")
+    if user_id is not None:
+        user_data = context.application.user_data.get(user_id)
+        if user_data is not None:
+            user_data.pop("pending_auth_state", None)
+    if chat_id:
+        try:
+            await context.application.bot.send_message(
+                chat_id=chat_id,
+                text="⏰ פג הזמן להשלמת ההרשאה. שלח הודעה חדשה כדי לנסות שוב.",
+            )
+        except Exception:
+            pass
+
+
+async def oauth_callback(request: web.Request) -> web.Response:
+    application = request.app["telegram_app"]
+    code = request.query.get("code")
+    state = request.query.get("state")
+    if not code or not state:
+        return web.Response(
+            text="<html><body><h1>Missing data</h1><p>code and state are required.</p></body></html>",
+            status=400,
+            content_type="text/html",
+        )
+
+    pending = PENDING_AUTH.pop(state, None)
+    if not pending:
+        html = (
+            "<html><body><h1>Session expired</h1>"
+            "<p>The authorization request has expired or is unknown.</p>"
+            f"<p>Code received: <code>{code}</code></p>"
+            "</body></html>"
+        )
+        return web.Response(text=html, status=400, content_type="text/html")
+
+    job = pending.get("job")
+    if job:
+        job.schedule_removal()
+
+    user_id = pending["user_id"]
+    chat_id = pending["chat_id"]
+    flow = pending["flow"]
+
+    try:
+        finish_auth_flow(user_id, flow, code)
+    except Exception as exc:
+        message = f"❌ שגיאה בתהליך ההרשאה: {exc}"
+        html = (
+            "<html><body><h1>Authorization failed</h1>"
+            f"<p>{exc}</p>"
+            f"<p>Code: <code>{code}</code></p>"
+            "</body></html>"
+        )
+        await application.bot.send_message(chat_id=chat_id, text=message)
+        status = 500
+    else:
+        message = "✅ ההרשאה הושלמה! אפשר להמשיך להשתמש בבוט."
+        html = (
+            "<html><body><h1>Authorization successful</h1>"
+            "<p>The bot has been authorized. You can return to Telegram.</p>"
+            f"<p>Code: <code>{code}</code></p>"
+            "</body></html>"
+        )
+        status = 200
+        await application.bot.send_message(chat_id=chat_id, text=message)
+
+    user_data = application.user_data.get(user_id)
+    if user_data is not None:
+        user_data.pop("pending_auth_state", None)
+
+    return web.Response(text=html, status=status, content_type="text/html")
+
+
+async def setup_web_app(application) -> web.AppRunner:
+    web_app = web.Application()
+    web_app["telegram_app"] = application
+    web_app.router.add_get("/oauth/callback", oauth_callback)
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    site = web.TCPSite(runner, WEB_HOST, WEB_PORT)
+    await site.start()
+    web_app["site"] = site
+    print(
+        "🌐 שרת ה-OAuth מאזין בכתובת "
+        f"http://{WEB_HOST}:{WEB_PORT}/oauth/callback"
+    )
+    return runner
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data.setdefault("chat_id", update.effective_chat.id)
     context.bot_data["user_id"] = update.effective_user.id
@@ -78,8 +187,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     service = authenticate_google_calendar(user_id)
     if not service:
-        pending_flow = context.user_data.get("auth_flow")
-        if pending_flow:
+        pending_state = context.user_data.get("pending_auth_state")
+        if pending_state:
+            pending_data = PENDING_AUTH.get(pending_state)
+            if not pending_data:
+                context.user_data.pop("pending_auth_state", None)
+                await update.message.reply_text(
+                    "⏰ תהליך ההרשאה פג. שלח כל הודעה כדי להתחיל מחדש."
+                )
+                return
             code = text.strip()
             if "code=" in code or code.startswith("http"):
                 try:
@@ -91,21 +207,47 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ לא נמצא קוד הרשאה בהודעה.")
                 return
             try:
-                service = finish_auth_flow(user_id, pending_flow, code)
-                context.user_data.pop("auth_flow", None)
+                service = finish_auth_flow(user_id, pending_data["flow"], code)
+                job = pending_data.get("job")
+                if job:
+                    job.schedule_removal()
+                PENDING_AUTH.pop(pending_state, None)
+                context.user_data.pop("pending_auth_state", None)
                 await update.message.reply_text("✅ ההרשאה הושלמה! שלח את הפקודה שוב.")
             except Exception as e:
                 await update.message.reply_text(f"❌ שגיאה בתהליך ההרשאה: {e}")
             return
         else:
             try:
-                auth_url, flow = start_auth_flow()
+                generated_state = secrets.token_urlsafe(32)
+                auth_url, state, flow = start_auth_flow(state=generated_state)
             except Exception as e:
                 await update.message.reply_text(f"❌ שגיאה בתהליך ההרשאה: {e}")
                 return
-            context.user_data["auth_flow"] = flow
+            state = state or generated_state
+            if state in PENDING_AUTH:
+                # Extremely unlikely but make sure we don't override existing state
+                await update.message.reply_text(
+                    "❌ לא ניתן להתחיל תהליך הרשאה כרגע. נסה שוב."
+                )
+                return
+            job = context.application.job_queue.run_once(
+                expire_pending_auth,
+                when=AUTH_FLOW_TIMEOUT,
+                data={"state": state, "user_id": user_id, "chat_id": update.effective_chat.id},
+            )
+            PENDING_AUTH[state] = {
+                "flow": flow,
+                "user_id": user_id,
+                "chat_id": update.effective_chat.id,
+                "job": job,
+            }
+            context.user_data["pending_auth_state"] = state
             await update.message.reply_text(
-                f"👋 כדי להשתמש בבוט יש לאשר גישה ליומן:\n{auth_url}\nשלח לי את הקישור המלא או את הקוד שתקבל אחרי האישור."
+                "👋 כדי להשתמש בבוט יש לאשר גישה ליומן:\n"
+                f"{auth_url}\n"
+                "אחרי שתאשר, תראה דף שמאשר את ההתחברות והבוט ישלח לך הודעת אישור.\n"
+                "אם משהו משתבש, שלח לי את הקישור המלא או את הקוד שתקבל אחרי האישור."
             )
             return
 
@@ -356,14 +498,30 @@ async def check_event_changes(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat_id, text=f"❌ שגיאה בבדיקת אירועים: {e}")
 
 
-def main():
-    LABELS = load_contacts(BASE_DIR / "tag_contacts.xlsx")  # loads and caches labels & emails
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.job_queue.run_repeating(check_event_changes, interval=60, first=10)
+async def main():
+    load_contacts(BASE_DIR / "tag_contacts.xlsx")
+    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.job_queue.run_repeating(check_event_changes, interval=60, first=10)
+
+    runner = await setup_web_app(application)
+
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+
     print("🤖 הבוט מחובר לטלגרם ומחכה להודעות...")
-    app.run_polling()
+
+    try:
+        await application.updater.wait()
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
+        await runner.cleanup()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
