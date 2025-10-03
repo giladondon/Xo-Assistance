@@ -24,6 +24,7 @@ CREDENTIALS_FILE = Path(
 # Define Google Calendar Access Scope
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 TOKEN_DIR = BASE_DIR / "tokens"
+CALENDAR_PREF_PREFIX = "calendar_"
 
 
 def _resolve_redirect_uri() -> str | None:
@@ -118,8 +119,63 @@ def finish_auth_flow(user_id: int, flow: InstalledAppFlow, code: str):
     with open(token_path, "w") as token_file:
         token_file.write(creds.to_json())
     return build('calendar', 'v3', credentials=creds)
+
+
+def _calendar_pref_path(user_id: int) -> Path:
+    TOKEN_DIR.mkdir(exist_ok=True)
+    return TOKEN_DIR / f"{CALENDAR_PREF_PREFIX}{user_id}.json"
+
+
+def store_user_calendar_id(user_id: int, calendar_id: str) -> None:
+    path = _calendar_pref_path(user_id)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"calendar_id": calendar_id}, f)
+
+
+def load_user_calendar_id(user_id: int) -> str | None:
+    path = _calendar_pref_path(user_id)
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        calendar_id = data.get("calendar_id")
+        if isinstance(calendar_id, str) and calendar_id:
+            return calendar_id
+    except (json.JSONDecodeError, OSError):
+        return None
+    return None
+
+
+def list_calendars(service):
+    calendars = []
+    page_token = None
+    while True:
+        response = service.calendarList().list(pageToken=page_token).execute()
+        items = response.get("items", [])
+        for item in items:
+            calendars.append(
+                {
+                    "id": item.get("id"),
+                    "summary": item.get("summary", item.get("id", "")),
+                    "primary": item.get("primary", False),
+                }
+            )
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+    return [cal for cal in calendars if cal.get("id")]
+
+
 # Create an Event
-def create_event(service, summary, start_time_str, duration_minutes=60, label=""):
+def create_event(
+    service,
+    summary,
+    start_time_str,
+    duration_minutes=60,
+    label="",
+    calendar_id="primary",
+):
     start_time = datetime.strptime(start_time_str, "%Y-%m-%d %H:%M")
     end_time = start_time + timedelta(minutes=duration_minutes)
 
@@ -140,13 +196,13 @@ def create_event(service, summary, start_time_str, duration_minutes=60, label=""
         body["attendees"] = [{"email": e} for e in emails]
 
     event = service.events().insert(
-        calendarId="primary",
+        calendarId=calendar_id,
         body=body,
         sendUpdates="all" if emails else "none"
     ).execute()
     return event
 
-def find_event(service, user_text):
+def find_event(service, user_text, calendar_id="primary"):
     """
     Searches for an event based on partial text match in the upcoming 7 days.
     Returns the best matching event or None.
@@ -155,7 +211,7 @@ def find_event(service, user_text):
     later = (datetime.utcnow() + timedelta(days=7)).isoformat() + "Z"
 
     events_result = service.events().list(
-        calendarId='primary',
+        calendarId=calendar_id,
         timeMin=now,
         timeMax=later,
         singleEvents=True,
@@ -175,14 +231,14 @@ def find_event(service, user_text):
 
     return None
 
-def delete_event(service, event_id):
+def delete_event(service, event_id, calendar_id="primary"):
     """
     Deletes an event by ID.
     """
-    service.events().delete(calendarId='primary', eventId=event_id).execute()
+    service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
     print("🗑️ האירוע נמחק בהצלחה.")
 
-def update_event(service, event_id, updates):
+def update_event(service, event_id, updates, calendar_id="primary"):
     """
     Updates an existing event with new values.
     updates = {
@@ -191,7 +247,7 @@ def update_event(service, event_id, updates):
         "duration_minutes": ...
     }
     """
-    event = service.events().get(calendarId='primary', eventId=event_id).execute()
+    event = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
 
     if "summary" in updates:
         event['summary'] = updates['summary']
@@ -202,7 +258,9 @@ def update_event(service, event_id, updates):
         event['start'] = {"dateTime": start.isoformat(), "timeZone": "Asia/Jerusalem"}
         event['end'] = {"dateTime": end.isoformat(), "timeZone": "Asia/Jerusalem"}
 
-    updated_event = service.events().update(calendarId='primary', eventId=event_id, body=event).execute()
+    updated_event = service.events().update(
+        calendarId=calendar_id, eventId=event_id, body=event
+    ).execute()
     print("✅ האירוע עודכן בהצלחה.")
 
 # Clean Json File

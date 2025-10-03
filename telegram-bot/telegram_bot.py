@@ -23,6 +23,9 @@ from create_event import (
     update_event,
     start_auth_flow,
     finish_auth_flow,
+    list_calendars,
+    load_user_calendar_id,
+    store_user_calendar_id,
 )
 
 from helpers.contacts import load_contacts, all_labels, emails_for_label
@@ -109,6 +112,49 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+    selection = context.user_data.get("calendar_selection")
+    if selection:
+        choice = text.strip()
+        calendars = selection.get("calendars", [])
+        try:
+            idx = int(choice)
+        except ValueError:
+            await update.message.reply_text("אנא שלח את המספר של היומן שבחרת.")
+            return
+        if not (1 <= idx <= len(calendars)):
+            await update.message.reply_text("מספר לא חוקי. נסה שוב בבקשה.")
+            return
+        chosen = calendars[idx - 1]
+        store_user_calendar_id(user_id, chosen["id"])
+        context.user_data.pop("calendar_selection", None)
+        chosen_name = chosen.get("summary") or chosen.get("id")
+        await update.message.reply_text(
+            f"📅 היומן '{chosen_name}' נבחר. שלח שוב את הפקודה."
+        )
+        return
+
+    calendar_id = load_user_calendar_id(user_id) if user_id else "primary"
+    if user_id and not calendar_id:
+        calendars = list_calendars(service)
+        if not calendars:
+            await update.message.reply_text("❌ לא נמצאו יומנים בחשבון.")
+            return
+        context.user_data["calendar_selection"] = {"calendars": calendars}
+        lines = []
+        for i, cal in enumerate(calendars, start=1):
+            name = cal.get("summary") or cal.get("id")
+            if cal.get("primary"):
+                name = f"{name} (ראשי)"
+            lines.append(f"{i}. {name}")
+        message = "\n".join(lines)
+        await update.message.reply_text(
+            "בחר יומן להמשך עבודה ושלח את המספר המתאים:\n" + message
+        )
+        return
+
+    if not calendar_id:
+        calendar_id = "primary"
+
     await update.message.reply_text("🧠 מעבד את הפקודה...")
 
     match = re.search(r"@([\w\u0590-\u05FF]+)", text)
@@ -128,10 +174,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         if pending["action"] == "create":
-            create_event(service, pending["summary"], pending["start"], pending["duration"], chosen)
+            create_event(
+                service,
+                pending["summary"],
+                pending["start"],
+                pending["duration"],
+                chosen,
+                calendar_id=calendar_id,
+            )
             await update.message.reply_text("✅ אירוע נוצר עם התגית, צבע והזמנות נשלחו.")
         else:
-            ev = find_event(service, pending["summary"])
+            ev = find_event(service, pending["summary"], calendar_id=calendar_id)
             if not ev:
                 await update.message.reply_text("❌ לא נמצא אירוע לעדכון.")
             else:
@@ -140,7 +193,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "start_time": pending["start"],
                     "duration_minutes": pending["duration"],
                 }
-                update_event(service, ev["id"], updates)
+                update_event(service, ev["id"], updates, calendar_id=calendar_id)
                 patch = {}
                 ems = emails_for_label(chosen)
                 if ems:
@@ -150,7 +203,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     patch["colorId"] = cid
                 if patch:
                     service.events().patch(
-                        calendarId="primary", eventId=ev["id"], body=patch, sendUpdates="all"
+                        calendarId=calendar_id,
+                        eventId=ev["id"],
+                        body=patch,
+                        sendUpdates="all",
                     ).execute()
                 await update.message.reply_text("✏️ האירוע עודכן עם תגית, צבע והזמנות.")
         context.user_data.pop("pending_event", None)
@@ -180,7 +236,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         duration = data.get("duration_minutes", 60)
 
         if action == "summarize":
-            await send_tomorrow_schedule(update, context, service)
+            await send_tomorrow_schedule(update, context, service, calendar_id)
             return
 
         if action in ("create", "update") and (not label or label not in all_labels()):
@@ -191,21 +247,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if action == "create":
-            create_event(service, summary, start_time, duration, label)
+            create_event(
+                service,
+                summary,
+                start_time,
+                duration,
+                label,
+                calendar_id=calendar_id,
+            )
             await update.message.reply_text("✅ אירוע נוצר עם צבע והזמנות (אם קיימות).")
 
         elif action == "delete":
-            event = find_event(service, summary)
+            event = find_event(service, summary, calendar_id=calendar_id)
             if event:
-                delete_event(service, event["id"])
+                delete_event(service, event["id"], calendar_id=calendar_id)
                 await update.message.reply_text("🗑️ האירוע נמחק בהצלחה!")
             else:
                 await update.message.reply_text("❌ לא נמצא אירוע למחיקה.")
 
         elif action == "update":
-            event = find_event(service, summary)
+            event = find_event(service, summary, calendar_id=calendar_id)
             if event:
-                update_event(service, event["id"], data)
+                update_event(service, event["id"], data, calendar_id=calendar_id)
                 await update.message.reply_text("✏️ האירוע עודכן בהצלחה!")
             else:
                 await update.message.reply_text("❌ לא נמצא אירוע לעדכון.")
@@ -217,7 +280,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ שגיאה")
 
 
-async def send_tomorrow_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, service):
+async def send_tomorrow_schedule(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    service,
+    calendar_id: str,
+):
     try:
 
         # Get tomorrow's range
@@ -226,7 +294,7 @@ async def send_tomorrow_schedule(update: Update, context: ContextTypes.DEFAULT_T
         end = start + timedelta(days=1)
 
         events_result = service.events().list(
-            calendarId='primary',
+            calendarId=calendar_id,
             timeMin=start.isoformat() + "Z",
             timeMax=end.isoformat() + "Z",
             singleEvents=True,
@@ -299,13 +367,19 @@ async def check_event_changes(context: ContextTypes.DEFAULT_TYPE):
     if not service:
         return
 
+    calendar_id = load_user_calendar_id(user_id) if user_id else "primary"
+    if user_id and not calendar_id:
+        return
+    if not calendar_id:
+        calendar_id = "primary"
+
     try:
         now = datetime.utcnow()
         time_min = now.isoformat() + "Z"
         time_max = (now + timedelta(hours=24)).isoformat() + "Z"
 
         events_result = service.events().list(
-            calendarId="primary",
+            calendarId=calendar_id,
             timeMin=time_min,
             timeMax=time_max,
             singleEvents=True,
