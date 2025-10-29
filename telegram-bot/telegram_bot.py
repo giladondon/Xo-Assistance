@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import traceback
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
@@ -277,7 +278,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ פעולה לא מזוהה.")
 
     except Exception as e:
-        await update.message.reply_text(f"❌ שגיאה")
+        error_message = f"❌ שגיאה: {e}"
+        print("Error while handling message:", e)
+        traceback.print_exc()
+        await update.message.reply_text(error_message)
 
 
 async def send_tomorrow_schedule(
@@ -354,6 +358,8 @@ async def send_tomorrow_schedule(
         await update.message.reply_text(summary_text)
 
     except Exception as e:
+        print("Error while sending tomorrow schedule:", e)
+        traceback.print_exc()
         await update.message.reply_text(f"❌ שגיאה: {str(e)}")
 
 
@@ -427,6 +433,8 @@ async def check_event_changes(context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(chat_id=chat_id, text=msg)
 
     except Exception as e:
+        print("Error while checking event changes:", e)
+        traceback.print_exc()
         await context.bot.send_message(chat_id=chat_id, text=f"❌ שגיאה בבדיקת אירועים: {e}")
 
 
