@@ -14,6 +14,7 @@ from telegram.ext import (
     filters,
 )
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from openai import OpenAI
 
 from create_event import (
@@ -38,6 +39,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 BASE_DIR = Path(__file__).resolve().parent
+LOCAL_TZ = ZoneInfo("Asia/Jerusalem")
 
 with open(BASE_DIR / "notification_templates.json", "r", encoding="utf-8") as f:
     TEMPLATES = json.load(f)
@@ -55,7 +57,7 @@ def time_date_strings(start_str: str):
         return start_str, start_str
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    local = dt.astimezone()
+    local = dt.astimezone(LOCAL_TZ)
     return local.strftime("%H:%M"), local.strftime("%d/%m")
 
 
@@ -380,9 +382,9 @@ async def check_event_changes(context: ContextTypes.DEFAULT_TYPE):
         calendar_id = "primary"
 
     try:
-        now = datetime.utcnow()
-        time_min = now.isoformat() + "Z"
-        time_max = (now + timedelta(hours=24)).isoformat() + "Z"
+        now = datetime.now(timezone.utc)
+        time_min = now.isoformat()
+        time_max = (now + timedelta(hours=24)).isoformat()
 
         events_result = service.events().list(
             calendarId=calendar_id,
@@ -402,11 +404,15 @@ async def check_event_changes(context: ContextTypes.DEFAULT_TYPE):
             start = ev["start"].get("dateTime", ev["start"].get("date"))
             summary = ev.get("summary", "ללא כותרת")
             updated = ev.get("updated")
-            if ev_id not in tracked:
+            previous = tracked.get(ev_id)
+            if not previous:
                 tracked[ev_id] = {"updated": updated, "summary": summary, "start": start}
             else:
-                if tracked[ev_id]["updated"] != updated:
-                    old_time, old_date = time_date_strings(tracked[ev_id]["start"])
+                has_meaningful_change = (
+                    previous.get("start") != start or previous.get("summary") != summary
+                )
+                if has_meaningful_change and previous.get("updated") != updated:
+                    old_time, old_date = time_date_strings(previous["start"])
                     new_time, new_date = time_date_strings(start)
                     tracked[ev_id] = {"updated": updated, "summary": summary, "start": start}
                     msg = render_message(
