@@ -14,6 +14,7 @@ from telegram.ext import (
     filters,
 )
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from openai import OpenAI
 
 from create_event import (
@@ -38,6 +39,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 BASE_DIR = Path(__file__).resolve().parent
+LOCAL_TZ = ZoneInfo("Asia/Jerusalem")
 
 with open(BASE_DIR / "notification_templates.json", "r", encoding="utf-8") as f:
     TEMPLATES = json.load(f)
@@ -55,7 +57,7 @@ def time_date_strings(start_str: str):
         return start_str, start_str
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    local = dt.astimezone()
+    local = dt.astimezone(LOCAL_TZ)
     return local.strftime("%H:%M"), local.strftime("%d/%m")
 
 
@@ -237,7 +239,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         duration = data.get("duration_minutes", 60)
 
         if action == "summarize":
-            await send_tomorrow_schedule(update, context, service, calendar_id)
+            target_date = data.get("date")
+            date_obj = None
+            if target_date:
+                try:
+                    date_obj = datetime.fromisoformat(target_date).date()
+                except ValueError:
+                    date_obj = None
+            if not date_obj:
+                date_obj = datetime.now(LOCAL_TZ).date() + timedelta(days=1)
+            await send_schedule_for_date(update, context, service, calendar_id, date_obj)
             return
 
         if action in ("create", "update") and (not label or label not in all_labels()):
@@ -284,30 +295,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(error_message)
 
 
-async def send_tomorrow_schedule(
+async def send_schedule_for_date(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     service,
     calendar_id: str,
+    target_date,
 ):
     try:
 
-        # Get tomorrow's range
-        tomorrow = datetime.utcnow() + timedelta(days=1)
-        start = datetime(tomorrow.year, tomorrow.month, tomorrow.day)
-        end = start + timedelta(days=1)
+        start_local = datetime(
+            target_date.year, target_date.month, target_date.day, tzinfo=LOCAL_TZ
+        )
+        end_local = start_local + timedelta(days=1)
 
         events_result = service.events().list(
             calendarId=calendar_id,
-            timeMin=start.isoformat() + "Z",
-            timeMax=end.isoformat() + "Z",
+            timeMin=start_local.astimezone(timezone.utc).isoformat(),
+            timeMax=end_local.astimezone(timezone.utc).isoformat(),
             singleEvents=True,
             orderBy='startTime'
         ).execute()
 
         events = events_result.get("items", [])
         if not events:
-            await update.message.reply_text("📭 אין אירועים מחר.")
+            await update.message.reply_text(
+                f"📭 אין אירועים בתאריך {target_date.strftime('%d/%m/%Y')}."
+            )
             return
 
         # Format event list and collect color emojis
@@ -315,23 +329,23 @@ async def send_tomorrow_schedule(
         event_emojis = []
         for event in events:
             summary = event.get("summary", "ללא כותרת")
-            start_time = event["start"].get("dateTime", event["start"].get("date"))
-            duration = 60  # Default
-            if "dateTime" in event["start"] and "dateTime" in event["end"]:
-                start_dt = datetime.fromisoformat(event["start"]["dateTime"])
-                end_dt = datetime.fromisoformat(event["end"]["dateTime"])
-                duration = int((end_dt - start_dt).total_seconds() // 60)
-                time_str = start_dt.strftime("%H:%M")
+            start_time = event["start"].get("dateTime")
+            end_time = event["end"].get("dateTime")
+            if start_time and end_time:
+                start_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+                local_start = start_dt.astimezone(LOCAL_TZ)
+                time_str = local_start.strftime("%H:%M")
             else:
-                time_str = start_time
-            event_lines.append(f"{time_str} - {summary} (משך: {duration} דקות)")
+                all_day = event["start"].get("date")
+                time_str = "אירוע יום שלם" if all_day else "זמן לא צוין"
+            event_lines.append(f"{time_str} - {summary}")
             event_emojis.append(emoji_for_color(event.get("colorId")))
 
-        # Load prompt and inject today's date
-        today_str = datetime.now().strftime("%d/%m/%Y")
+        # Load prompt and inject requested date
+        date_str = target_date.strftime("%d/%m/%Y")
         with open(BASE_DIR / "summarize_schedule_prompt.txt", "r", encoding="utf-8") as f:
             prompt_template = f.read()
-        prompt = prompt_template.replace("[תוסיף כאן תאריך של היום]", today_str)
+        prompt = prompt_template.replace("[תאריך]", date_str)
         full_prompt = prompt + "\n" + "\n\n".join(event_lines)
 
         # GPT call
@@ -358,7 +372,7 @@ async def send_tomorrow_schedule(
         await update.message.reply_text(summary_text)
 
     except Exception as e:
-        print("Error while sending tomorrow schedule:", e)
+        print("Error while sending schedule summary:", e)
         traceback.print_exc()
         await update.message.reply_text(f"❌ שגיאה: {str(e)}")
 
@@ -380,9 +394,9 @@ async def check_event_changes(context: ContextTypes.DEFAULT_TYPE):
         calendar_id = "primary"
 
     try:
-        now = datetime.utcnow()
-        time_min = now.isoformat() + "Z"
-        time_max = (now + timedelta(hours=24)).isoformat() + "Z"
+        now = datetime.now(timezone.utc)
+        time_min = now.isoformat()
+        time_max = (now + timedelta(hours=24)).isoformat()
 
         events_result = service.events().list(
             calendarId=calendar_id,
@@ -402,11 +416,15 @@ async def check_event_changes(context: ContextTypes.DEFAULT_TYPE):
             start = ev["start"].get("dateTime", ev["start"].get("date"))
             summary = ev.get("summary", "ללא כותרת")
             updated = ev.get("updated")
-            if ev_id not in tracked:
+            previous = tracked.get(ev_id)
+            if not previous:
                 tracked[ev_id] = {"updated": updated, "summary": summary, "start": start}
             else:
-                if tracked[ev_id]["updated"] != updated:
-                    old_time, old_date = time_date_strings(tracked[ev_id]["start"])
+                has_meaningful_change = (
+                    previous.get("start") != start or previous.get("summary") != summary
+                )
+                if has_meaningful_change and previous.get("updated") != updated:
+                    old_time, old_date = time_date_strings(previous["start"])
                     new_time, new_date = time_date_strings(start)
                     tracked[ev_id] = {"updated": updated, "summary": summary, "start": start}
                     msg = render_message(
