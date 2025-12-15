@@ -1,34 +1,37 @@
 # helpers/contacts.py
+import os
 import re
 from typing import Dict, List
 
-import pandas as pd
+from firebase_admin import credentials, firestore, get_app, initialize_app
 
 _CONTACTS = None
 _LABEL_EMAILS = None
 _LABELS = None
 
 _LABEL_SPLIT_RE = re.compile(r"[;,/|]+")
+_FIRESTORE = None
 
-# Map common header variants (Heb/Eng) to canonical names
-HEADER_MAP = {
-    # label/tag
-    "label": "label", "labels": "label", "category": "label", "tag": "label", "tags": "label",
-    "תגית": "label", "תגיות": "label", "תווית": "label", "סיווג": "label", "קבוצה": "label",
 
-    # email
-    "email": "email", "e-mail": "email", "mail": "email",
-    "דוא\"ל": "email", "דואל": "email", "אימייל": "email", "מייל": "email",
-    "כתובת אימייל": "email", "כתובת דוא\"ל": "email", "כתובת מייל": "email",
+def _get_firestore_client():
+    """Initialize and cache a Firestore client using a service account."""
+    global _FIRESTORE
+    if _FIRESTORE is not None:
+        return _FIRESTORE
 
-    # optional name
-    "name": "name", "full name": "name", "שם": "name", "שם מלא": "name",
-}
+    cred_path = os.getenv("FIREBASE_CREDENTIALS")
+    if not cred_path:
+        raise ValueError("FIREBASE_CREDENTIALS environment variable is required")
+    if not os.path.exists(cred_path):
+        raise FileNotFoundError(f"Service account file not found at: {cred_path}")
 
-def _canonicalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df.columns = [str(c).strip().lower() for c in df.columns]
-    rename = {c: HEADER_MAP.get(c, c) for c in df.columns}
-    return df.rename(columns=rename)
+    credentials_obj = credentials.Certificate(cred_path)
+    try:
+        get_app()
+    except ValueError:
+        initialize_app(credentials_obj)
+    _FIRESTORE = firestore.client()
+    return _FIRESTORE
 
 def _split_labels(value) -> List[str]:
     """Split a raw label cell into a list of cleaned labels."""
@@ -49,39 +52,28 @@ def _split_labels(value) -> List[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
-def load_contacts(path="tag_contacts.xlsx"):
+def load_contacts():
     """
-    Loads contacts from Excel and builds:
+    Loads contacts from the Firebase collection "INS Leviathan" and builds:
       - _LABEL_EMAILS: dict(label -> [emails])
       - _LABELS: sorted list of labels with emails
-    Required columns (any recognized variant): label/tag, email.
-    Cells in the label column may contain multiple labels separated by
-    commas, semicolons, slashes, pipes, or newlines.
+    Documents are expected to contain an "email" string and a "labels" array.
     """
     global _CONTACTS, _LABEL_EMAILS, _LABELS
-    df = pd.read_excel(path, header=0).fillna("")
-    df = _canonicalize_columns(df)
-
-    required = {"label", "email"}
-    missing = required - set(df.columns)
-    if missing:
-        raise ValueError(
-            f"Excel must include columns for label & email. "
-            f"Detected: {list(df.columns)}. Missing: {list(missing)}"
-        )
-
-    df["label"] = df["label"].apply(_split_labels)
-    df["email"] = df["email"].astype(str).str.strip()
+    db = _get_firestore_client()
+    collection = db.collection("INS Leviathan")
 
     label_emails: Dict[str, List[str]] = {}
     all_labels_set: set[str] = set()
+    contacts_rows = []
 
-    for _, row in df.iterrows():
-        labels = row["label"] or []
-        email = row["email"].strip()
+    for doc in collection.stream():
+        data = doc.to_dict() or {}
+        labels = data.get("labels") or []
+        email = str(data.get("email", "")).strip()
+
+        labels = _split_labels(labels)
         for label in labels:
-            if not label:
-                continue
             all_labels_set.add(label)
             emails = label_emails.setdefault(label, [])
             if email and email not in emails:
@@ -92,13 +84,12 @@ def load_contacts(path="tag_contacts.xlsx"):
             for label in labels:
                 label_emails.setdefault(label, [])
 
+        contacts_rows.append({"id": doc.id, "label": labels, "email": email})
+
     for label in all_labels_set:
         label_emails.setdefault(label, [])
 
-    exploded = df.explode("label")
-    exploded["label"] = exploded["label"].fillna("").astype(str).str.strip()
-
-    _CONTACTS = exploded
+    _CONTACTS = contacts_rows
     _LABEL_EMAILS = label_emails
     _LABELS = sorted(all_labels_set)
     return _LABELS

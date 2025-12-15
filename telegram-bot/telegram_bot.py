@@ -457,7 +457,7 @@ async def check_event_changes(context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
-    LABELS = load_contacts(BASE_DIR / "tag_contacts.xlsx")  # loads and caches labels & emails
+    LABELS = load_contacts()  # loads and caches labels & emails from Firebase
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.job_queue.run_repeating(check_event_changes, interval=60, first=10)
