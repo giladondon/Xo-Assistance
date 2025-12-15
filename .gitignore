@@ -1,6 +1,7 @@
 # created by virtualenv automatically
 
 telegram-bot/credentials.json
+telegram-bot/firebase-key.json
 token.json
 telegram-bot/tokens/
 __pycache__/
