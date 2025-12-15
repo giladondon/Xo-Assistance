@@ -1,88 +1,100 @@
 # helpers/contacts.py
-import re
-from typing import Dict, List
+import json
+import os
+from typing import Dict, List, Optional
 
-import pandas as pd
+from google.cloud import firestore
+from google.oauth2 import service_account
 
-_CONTACTS = None
-_LABEL_EMAILS = None
-_LABELS = None
+_CLIENT: Optional[firestore.Client] = None
+_CONTACTS_CACHE: Dict[str, List[dict]] = {}
+_LABEL_EMAILS_CACHE: Dict[str, Dict[str, List[str]]] = {}
+_LABELS_CACHE: Dict[str, List[str]] = {}
 
-_LABEL_SPLIT_RE = re.compile(r"[;,/|]+")
+DEFAULT_COLLECTION = os.getenv("FIREBASE_COLLECTION", "INS Leviathan")
+COLLECTION_MAP = os.getenv("FIREBASE_COLLECTION_MAP")
 
-# Map common header variants (Heb/Eng) to canonical names
-HEADER_MAP = {
-    # label/tag
-    "label": "label", "labels": "label", "category": "label", "tag": "label", "tags": "label",
-    "תגית": "label", "תגיות": "label", "תווית": "label", "סיווג": "label", "קבוצה": "label",
-
-    # email
-    "email": "email", "e-mail": "email", "mail": "email",
-    "דוא\"ל": "email", "דואל": "email", "אימייל": "email", "מייל": "email",
-    "כתובת אימייל": "email", "כתובת דוא\"ל": "email", "כתובת מייל": "email",
-
-    # optional name
-    "name": "name", "full name": "name", "שם": "name", "שם מלא": "name",
-}
-
-def _canonicalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df.columns = [str(c).strip().lower() for c in df.columns]
-    rename = {c: HEADER_MAP.get(c, c) for c in df.columns}
-    return df.rename(columns=rename)
-
-def _split_labels(value) -> List[str]:
-    """Split a raw label cell into a list of cleaned labels."""
-    if value is None:
-        return []
-    if isinstance(value, list):
-        labels: List[str] = []
-        for item in value:
-            labels.extend(_split_labels(item))
-        return labels
-
-    text = str(value).strip()
-    if not text:
-        return []
-
-    text = text.replace("\n", ",")
-    parts = _LABEL_SPLIT_RE.split(text)
-    return [p.strip() for p in parts if p.strip()]
+# Place your Firebase service account JSON in the FIREBASE_CREDENTIALS_JSON
+# environment variable (or provide a path via FIREBASE_CREDENTIALS_FILE). The
+# JSON must include the private key block exactly as received from Firebase.
+FIREBASE_CREDENTIALS_JSON = os.getenv("FIREBASE_CREDENTIALS_JSON")
+FIREBASE_CREDENTIALS_FILE = os.getenv("FIREBASE_CREDENTIALS_FILE")
 
 
-def load_contacts(path="tag_contacts.xlsx"):
-    """
-    Loads contacts from Excel and builds:
-      - _LABEL_EMAILS: dict(label -> [emails])
-      - _LABELS: sorted list of labels with emails
-    Required columns (any recognized variant): label/tag, email.
-    Cells in the label column may contain multiple labels separated by
-    commas, semicolons, slashes, pipes, or newlines.
-    """
-    global _CONTACTS, _LABEL_EMAILS, _LABELS
-    df = pd.read_excel(path, header=0).fillna("")
-    df = _canonicalize_columns(df)
+def _cache_key(user_id: Optional[int]) -> str:
+    return str(user_id) if user_id is not None else "__default__"
 
-    required = {"label", "email"}
-    missing = required - set(df.columns)
-    if missing:
-        raise ValueError(
-            f"Excel must include columns for label & email. "
-            f"Detected: {list(df.columns)}. Missing: {list(missing)}"
+
+def _get_collection_for_user(user_id: Optional[int]) -> str:
+    if COLLECTION_MAP:
+        try:
+            mapping = json.loads(COLLECTION_MAP)
+            collection = mapping.get(str(user_id))
+            if collection:
+                return collection
+        except json.JSONDecodeError:
+            pass
+    return DEFAULT_COLLECTION
+
+
+def _build_firestore_client() -> firestore.Client:
+    global _CLIENT
+    if _CLIENT:
+        return _CLIENT
+
+    credentials = None
+    if FIREBASE_CREDENTIALS_JSON:
+        credentials = service_account.Credentials.from_service_account_info(
+            json.loads(FIREBASE_CREDENTIALS_JSON)
+        )
+    elif FIREBASE_CREDENTIALS_FILE:
+        credentials = service_account.Credentials.from_service_account_file(
+            FIREBASE_CREDENTIALS_FILE
+        )
+    else:
+        raise RuntimeError(
+            "Firebase credentials missing. Set FIREBASE_CREDENTIALS_JSON with your service "
+            "account JSON (including private key) or FIREBASE_CREDENTIALS_FILE with a path to the file."
         )
 
-    df["label"] = df["label"].apply(_split_labels)
-    df["email"] = df["email"].astype(str).str.strip()
+    _CLIENT = firestore.Client(credentials=credentials, project=credentials.project_id)
+    return _CLIENT
+
+
+def _fetch_contacts_from_firestore(collection_name: str) -> List[dict]:
+    client = _build_firestore_client()
+    docs = client.collection(collection_name).stream()
+    contacts: List[dict] = []
+    for doc in docs:
+        data = doc.to_dict() or {}
+        contacts.append({
+            "labels": data.get("Lables") or data.get("Labels") or [],
+            "email": str(data.get("Email", "")).strip(),
+            "first_name": data.get("First name") or data.get("First Name") or "",
+            "last_name": data.get("Last name") or data.get("Last Name") or "",
+        })
+    return contacts
+
+
+def load_contacts(user_id: Optional[int] = None) -> List[str]:
+    """Load contacts for a specific user (collection) from Firestore."""
+    cache_key = _cache_key(user_id)
+    if cache_key in _LABELS_CACHE:
+        return _LABELS_CACHE[cache_key]
+
+    collection_name = _get_collection_for_user(user_id)
+    contacts = _fetch_contacts_from_firestore(collection_name)
 
     label_emails: Dict[str, List[str]] = {}
-    all_labels_set: set[str] = set()
+    labels_set: set[str] = set()
 
-    for _, row in df.iterrows():
-        labels = row["label"] or []
-        email = row["email"].strip()
+    for contact in contacts:
+        labels = contact.get("labels") or []
+        email = contact.get("email", "")
         for label in labels:
             if not label:
                 continue
-            all_labels_set.add(label)
+            labels_set.add(label)
             emails = label_emails.setdefault(label, [])
             if email and email not in emails:
                 emails.append(email)
@@ -92,25 +104,23 @@ def load_contacts(path="tag_contacts.xlsx"):
             for label in labels:
                 label_emails.setdefault(label, [])
 
-    for label in all_labels_set:
+    for label in labels_set:
         label_emails.setdefault(label, [])
 
-    exploded = df.explode("label")
-    exploded["label"] = exploded["label"].fillna("").astype(str).str.strip()
+    _CONTACTS_CACHE[cache_key] = contacts
+    _LABEL_EMAILS_CACHE[cache_key] = label_emails
+    _LABELS_CACHE[cache_key] = sorted(labels_set)
+    return _LABELS_CACHE[cache_key]
 
-    _CONTACTS = exploded
-    _LABEL_EMAILS = label_emails
-    _LABELS = sorted(all_labels_set)
-    return _LABELS
 
-def emails_for_label(label: str):
+def emails_for_label(label: str, user_id: Optional[int] = None) -> List[str]:
     if not label:
         return []
-    if _LABEL_EMAILS is None:
-        load_contacts()
-    return _LABEL_EMAILS.get(label.strip(), [])
+    load_contacts(user_id)
+    cache_key = _cache_key(user_id)
+    return _LABEL_EMAILS_CACHE.get(cache_key, {}).get(label.strip(), [])
 
-def all_labels():
-    if _LABELS is None:
-        load_contacts()
-    return _LABELS
+
+def all_labels(user_id: Optional[int] = None) -> List[str]:
+    load_contacts(user_id)
+    return _LABELS_CACHE.get(_cache_key(user_id), [])

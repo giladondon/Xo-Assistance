@@ -82,6 +82,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = context.bot_data["user_id"]
     text = update.message.text
 
+    try:
+        load_contacts(user_id)
+    except Exception as e:
+        await update.message.reply_text(f"❌ שגיאה בטעינת אנשי קשר מפיירבייס: {e}")
+        return
+
     service = authenticate_google_calendar(user_id)
     if not service:
         pending_flow = context.user_data.get("auth_flow")
@@ -171,9 +177,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if chosen.startswith("@"):
             chosen = chosen[1:]
         chosen = chosen.split()[0]
-        if chosen not in all_labels():
+        if chosen not in all_labels(user_id):
             await update.message.reply_text(
-                f"תגית לא מוכרת. נסה אחת מ: {', '.join(all_labels())}"
+                f"תגית לא מוכרת. נסה אחת מ: {', '.join(all_labels(user_id))}"
             )
             return
         if pending["action"] == "create":
@@ -198,7 +204,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 }
                 update_event(service, ev["id"], updates, calendar_id=calendar_id)
                 patch = {}
-                ems = emails_for_label(chosen)
+                ems = emails_for_label(chosen, user_id)
                 if ems:
                     patch["attendees"] = [{"email": e} for e in ems]
                 cid = color_for_label(chosen)
@@ -217,7 +223,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     with open(BASE_DIR / "xo_assistance_prompt.txt", "r", encoding="utf-8") as f:
         base = f.read()
-    system_prompt = base.replace("{LABELS}", ", ".join(all_labels()))
+    system_prompt = base.replace("{LABELS}", ", ".join(all_labels(user_id)))
 
     today = datetime.now().strftime("%Y-%m-%d")
 
@@ -251,11 +257,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_schedule_for_date(update, context, service, calendar_id, date_obj)
             return
 
-        if action in ("create", "update") and (not label or label not in all_labels()):
+        if action in ("create", "update") and (not label or label not in all_labels(user_id)):
             context.user_data["pending_event"] = {
                 "action": action, "summary": summary, "start": start_time, "duration": duration,
             }
-            await update.message.reply_text(f"לא זיהיתי תגית. בחר אחת: {', '.join(all_labels())}")
+            await update.message.reply_text(f"לא זיהיתי תגית. בחר אחת: {', '.join(all_labels(user_id))}")
             return
 
         if action == "create":
@@ -457,7 +463,7 @@ async def check_event_changes(context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
-    LABELS = load_contacts(BASE_DIR / "tag_contacts.xlsx")  # loads and caches labels & emails
+    load_contacts()  # Preload default collection labels & emails from Firebase
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.job_queue.run_repeating(check_event_changes, interval=60, first=10)
