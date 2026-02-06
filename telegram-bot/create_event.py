@@ -1,8 +1,11 @@
 from datetime import datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import re
 import os
 import json
+import threading
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -23,6 +26,8 @@ CREDENTIALS_FILE = Path(
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 TOKEN_DIR = BASE_DIR / "tokens"
 CALENDAR_PREF_PREFIX = "calendar_"
+_oauth_server = None
+_oauth_server_lock = threading.Lock()
 
 
 def _resolve_redirect_uri() -> str | None:
@@ -45,6 +50,91 @@ def _resolve_redirect_uri() -> str | None:
     except Exception:
         pass
     return None
+
+
+def _build_oauth_callback_html(code: str | None) -> bytes:
+    safe_code = code or ""
+    body = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Authorization complete</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 2rem; line-height: 1.5; }}
+    .card {{ max-width: 720px; border: 1px solid #d9d9d9; border-radius: 12px; padding: 1rem 1.25rem; }}
+    .code {{ display: block; width: 100%; margin-top: .5rem; padding: .75rem; font-family: monospace; font-size: 0.95rem; }}
+    button {{ margin-top: .75rem; padding: .6rem 1rem; border-radius: 8px; border: 1px solid #999; cursor: pointer; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>✅ Google authorization completed</h2>
+    <p>Copy this code and paste it back into Telegram.</p>
+    <input id="oauthCode" class="code" value="{safe_code}" readonly />
+    <button type="button" onclick="copyCode()">Copy code</button>
+    <p id="copied"></p>
+  </div>
+  <script>
+    function copyCode() {{
+      const field = document.getElementById('oauthCode');
+      field.select();
+      field.setSelectionRange(0, 99999);
+      navigator.clipboard.writeText(field.value).then(() => {{
+        document.getElementById('copied').innerText = 'Copied. You can return to Telegram now.';
+      }});
+    }}
+  </script>
+</body>
+</html>
+"""
+    return body.encode("utf-8")
+
+
+def _start_oauth_callback_server() -> None:
+    global _oauth_server
+
+    redirect_uri = _resolve_redirect_uri()
+    if not redirect_uri:
+        return
+
+    parsed = urlparse(redirect_uri)
+    if parsed.hostname not in {"localhost", "127.0.0.1"}:
+        return
+
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    expected_path = parsed.path or "/"
+
+    with _oauth_server_lock:
+        if _oauth_server is not None:
+            return
+
+        class OAuthCallbackHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                incoming = urlparse(self.path)
+                if (incoming.path or "/") != expected_path:
+                    self.send_response(404)
+                    self.end_headers()
+                    self.wfile.write(b"Not found")
+                    return
+
+                code = parse_qs(incoming.query).get("code", [""])[0]
+                payload = _build_oauth_callback_html(code)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, format, *args):
+                return
+
+        try:
+            _oauth_server = ThreadingHTTPServer((parsed.hostname, port), OAuthCallbackHandler)
+            thread = threading.Thread(target=_oauth_server.serve_forever, daemon=True)
+            thread.start()
+        except OSError:
+            _oauth_server = None
 
 
 # Resolve redirect URI at call time to capture late environment changes
@@ -93,6 +183,7 @@ def authenticate_google_calendar(user_id: int | None = None):
 
 def start_auth_flow():
     """Create an OAuth flow and return the authorization URL and flow object."""
+    _start_oauth_callback_server()
     redirect_uri = _resolve_redirect_uri()
     kwargs = {"redirect_uri": redirect_uri} if redirect_uri else {}
     flow = InstalledAppFlow.from_client_secrets_file(
