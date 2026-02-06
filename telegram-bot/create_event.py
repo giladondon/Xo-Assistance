@@ -11,8 +11,6 @@ from google.auth.transport.requests import Request
 from google.auth.exceptions import RefreshError
 from openai import OpenAI
 from dotenv import load_dotenv
-from helpers.colors import color_for_label
-from helpers.contacts import emails_for_label
 
 load_dotenv()
 
@@ -173,7 +171,7 @@ def create_event(
     summary,
     start_time_str,
     duration_minutes=60,
-    label="",
+    color_id="",
     calendar_id="primary",
 ):
     start_time = datetime.strptime(start_time_str, "%Y-%m-%d %H:%M")
@@ -185,20 +183,13 @@ def create_event(
         "end":   {"dateTime": end_time.isoformat(),   "timeZone": "Asia/Jerusalem"},
     }
 
-    # Color by label
-    cid = color_for_label(label)
-    if cid:
-        body["colorId"] = cid
-
-    # Invite label contacts
-    emails = emails_for_label(label)
-    if emails:
-        body["attendees"] = [{"email": e} for e in emails]
+    if color_id:
+        body["colorId"] = str(color_id)
 
     event = service.events().insert(
         calendarId=calendar_id,
         body=body,
-        sendUpdates="all" if emails else "none"
+        sendUpdates="none"
     ).execute()
     return event
 
