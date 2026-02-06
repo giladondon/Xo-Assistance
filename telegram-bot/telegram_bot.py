@@ -1,6 +1,5 @@
 import os
 import json
-import re
 import traceback
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -30,8 +29,7 @@ from create_event import (
     store_user_calendar_id,
 )
 
-from helpers.contacts import load_contacts, all_labels, emails_for_label
-from helpers.colors import color_for_label, emoji_for_color
+from helpers.colors import emoji_for_color
 
 load_dotenv()
 
@@ -160,64 +158,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("🧠 מעבד את הפקודה...")
 
-    match = re.search(r"@([\w\u0590-\u05FF]+)", text)
-    label = match.group(1) if match else None
-    if match:
-        text = (text[:match.start()] + text[match.end():]).strip()
-
-    pending = context.user_data.get("pending_event")
-    if pending:
-        chosen = update.message.text.strip()
-        if chosen.startswith("@"):
-            chosen = chosen[1:]
-        chosen = chosen.split()[0]
-        if chosen not in all_labels():
-            await update.message.reply_text(
-                f"תגית לא מוכרת. נסה אחת מ: {', '.join(all_labels())}"
-            )
-            return
-        if pending["action"] == "create":
-            create_event(
-                service,
-                pending["summary"],
-                pending["start"],
-                pending["duration"],
-                chosen,
-                calendar_id=calendar_id,
-            )
-            await update.message.reply_text("✅ אירוע נוצר עם התגית, צבע והזמנות נשלחו.")
-        else:
-            ev = find_event(service, pending["summary"], calendar_id=calendar_id)
-            if not ev:
-                await update.message.reply_text("❌ לא נמצא אירוע לעדכון.")
-            else:
-                updates = {
-                    "summary": pending["summary"],
-                    "start_time": pending["start"],
-                    "duration_minutes": pending["duration"],
-                }
-                update_event(service, ev["id"], updates, calendar_id=calendar_id)
-                patch = {}
-                ems = emails_for_label(chosen)
-                if ems:
-                    patch["attendees"] = [{"email": e} for e in ems]
-                cid = color_for_label(chosen)
-                if cid:
-                    patch["colorId"] = cid
-                if patch:
-                    service.events().patch(
-                        calendarId=calendar_id,
-                        eventId=ev["id"],
-                        body=patch,
-                        sendUpdates="all",
-                    ).execute()
-                await update.message.reply_text("✏️ האירוע עודכן עם תגית, צבע והזמנות.")
-        context.user_data.pop("pending_event", None)
-        return
-
     with open(BASE_DIR / "xo_assistance_prompt.txt", "r", encoding="utf-8") as f:
         base = f.read()
-    system_prompt = base.replace("{LABELS}", ", ".join(all_labels()))
+    system_prompt = base
 
     today = datetime.now().strftime("%Y-%m-%d")
 
@@ -237,6 +180,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         summary = data.get("summary")
         start_time = data.get("start_time")
         duration = data.get("duration_minutes", 60)
+        color_id = data.get("color_id", "")
 
         if action == "summarize":
             target_date = data.get("date")
@@ -251,23 +195,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_schedule_for_date(update, context, service, calendar_id, date_obj)
             return
 
-        if action in ("create", "update") and (not label or label not in all_labels()):
-            context.user_data["pending_event"] = {
-                "action": action, "summary": summary, "start": start_time, "duration": duration,
-            }
-            await update.message.reply_text(f"לא זיהיתי תגית. בחר אחת: {', '.join(all_labels())}")
-            return
-
         if action == "create":
             create_event(
                 service,
                 summary,
                 start_time,
                 duration,
-                label,
+                color_id,
                 calendar_id=calendar_id,
             )
-            await update.message.reply_text("✅ אירוע נוצר עם צבע והזמנות (אם קיימות).")
+            await update.message.reply_text("✅ אירוע נוצר עם צבע לפי הסיווג.")
 
         elif action == "delete":
             event = find_event(service, summary, calendar_id=calendar_id)
@@ -281,6 +218,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             event = find_event(service, summary, calendar_id=calendar_id)
             if event:
                 update_event(service, event["id"], data, calendar_id=calendar_id)
+                if color_id:
+                    service.events().patch(
+                        calendarId=calendar_id,
+                        eventId=event["id"],
+                        body={"colorId": str(color_id)},
+                        sendUpdates="none",
+                    ).execute()
                 await update.message.reply_text("✏️ האירוע עודכן בהצלחה!")
             else:
                 await update.message.reply_text("❌ לא נמצא אירוע לעדכון.")
@@ -457,7 +401,6 @@ async def check_event_changes(context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
-    LABELS = load_contacts(BASE_DIR / "tag_contacts.xlsx")  # loads and caches labels & emails
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.job_queue.run_repeating(check_event_changes, interval=60, first=10)
