@@ -103,15 +103,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         else:
             try:
-                auth_url, flow = start_auth_flow()
+                auth_url, flow = start_auth_flow(user_id=user_id, chat_id=update.effective_chat.id)
             except Exception as e:
                 await update.message.reply_text(f"❌ שגיאה בתהליך ההרשאה: {e}")
                 return
             context.user_data["auth_flow"] = flow
             await update.message.reply_text(
                 f"👋 כדי להשתמש בבוט יש לאשר גישה ליומן:\n{auth_url}\n"
-                "בסיום האישור יופיע דף עם קוד להעתקה. הדבק/י כאן את הקוד.\n"
-                "אם בכל זאת מתקבלת שגיאה בדפדפן, פשוט העתיק/י את כתובת הדף המלאה ושלח/י אותה כאן."
+                "בסיום האישור יופיע דף תודה, והבוט ישלח לך הודעת אישור אוטומטית בטלגרם.\n"
+                "אם לא קיבלת הודעה מהבוט, אפשר עדיין לשלוח כאן את הקישור המלא שקיבלת בדפדפן."
             )
             return
 

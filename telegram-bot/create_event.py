@@ -4,6 +4,9 @@ import re
 import os
 import json
 import threading
+import secrets
+import urllib.request
+import urllib.parse
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -28,6 +31,8 @@ TOKEN_DIR = BASE_DIR / "tokens"
 CALENDAR_PREF_PREFIX = "calendar_"
 _oauth_server = None
 _oauth_server_lock = threading.Lock()
+_pending_auth = {}
+_pending_auth_lock = threading.Lock()
 
 
 def _resolve_redirect_uri() -> str | None:
@@ -52,43 +57,59 @@ def _resolve_redirect_uri() -> str | None:
     return None
 
 
-def _build_oauth_callback_html(code: str | None) -> bytes:
-    safe_code = code or ""
+def _build_oauth_callback_html(success: bool, error_message: str = "") -> bytes:
+    title = "✅ ההתחברות לגוגל הושלמה" if success else "❌ ההתחברות נכשלה"
+    message = (
+        "תודה! אפשר לחזור עכשיו לבוט בטלגרם. קיבלת ממנו הודעת אישור."
+        if success
+        else f"אירעה שגיאה באימות: {error_message}. אפשר לחזור לבוט ולנסות שוב."
+    )
     body = f"""<!doctype html>
-<html lang="en">
+<html lang="he" dir="rtl">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Authorization complete</title>
+  <title>Google Authorization</title>
   <style>
-    body {{ font-family: Arial, sans-serif; margin: 2rem; line-height: 1.5; }}
-    .card {{ max-width: 720px; border: 1px solid #d9d9d9; border-radius: 12px; padding: 1rem 1.25rem; }}
-    .code {{ display: block; width: 100%; margin-top: .5rem; padding: .75rem; font-family: monospace; font-size: 0.95rem; }}
-    button {{ margin-top: .75rem; padding: .6rem 1rem; border-radius: 8px; border: 1px solid #999; cursor: pointer; }}
+    body {{ font-family: Arial, sans-serif; margin: 2rem; line-height: 1.5; background: #f7f7f8; }}
+    .card {{ max-width: 720px; border: 1px solid #d9d9d9; border-radius: 12px; padding: 1rem 1.25rem; background: #fff; }}
+    .hint {{ color: #444; margin-top: .75rem; }}
   </style>
 </head>
 <body>
   <div class="card">
-    <h2>✅ ההתחברות לגוגל הושלמה</h2>
-    <p>העתק/י את הקוד הבא והדבק/י אותו בבוט בטלגרם.</p>
-    <input id="oauthCode" class="code" value="{safe_code}" readonly />
-    <button type="button" onclick="copyCode()">Copy code</button>
-    <p id="copied"></p>
+    <h2>{title}</h2>
+    <p>{message}</p>
+    <p class="hint">ניתן לסגור את הדף הזה.</p>
   </div>
-  <script>
-    function copyCode() {{
-      const field = document.getElementById('oauthCode');
-      field.select();
-      field.setSelectionRange(0, 99999);
-      navigator.clipboard.writeText(field.value).then(() => {{
-        document.getElementById('copied').innerText = 'הועתק בהצלחה. אפשר לחזור עכשיו לטלגרם.';
-      }});
-    }}
-  </script>
 </body>
 </html>
 """
     return body.encode("utf-8")
+
+
+def _notify_telegram(chat_id: int, text: str) -> None:
+    token = os.getenv("TELEGRAM_TOKEN")
+    if not token:
+        return
+    payload = urllib.parse.urlencode({"chat_id": str(chat_id), "text": text}).encode("utf-8")
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(req, timeout=5).read()
+    except Exception:
+        return
+
+
+def _store_credentials(user_id: int, creds) -> None:
+    TOKEN_DIR.mkdir(exist_ok=True)
+    token_path = TOKEN_DIR / f"token_{user_id}.json"
+    with open(token_path, "w") as token_file:
+        token_file.write(creds.to_json())
 
 
 def _start_oauth_callback_server() -> None:
@@ -118,8 +139,30 @@ def _start_oauth_callback_server() -> None:
                     self.wfile.write(b"Not found")
                     return
 
-                code = parse_qs(incoming.query).get("code", [""])[0]
-                payload = _build_oauth_callback_html(code)
+                query = parse_qs(incoming.query)
+                code = query.get("code", [""])[0]
+                state = query.get("state", [""])[0]
+
+                if not code or not state:
+                    payload = _build_oauth_callback_html(False, "חסרים פרטי אימות")
+                else:
+                    with _pending_auth_lock:
+                        pending = _pending_auth.pop(state, None)
+                    if not pending:
+                        payload = _build_oauth_callback_html(False, "פג תוקף תהליך האימות")
+                    else:
+                        try:
+                            flow = pending["flow"]
+                            flow.fetch_token(code=code)
+                            _store_credentials(pending["user_id"], flow.credentials)
+                            _notify_telegram(
+                                pending["chat_id"],
+                                "✅ האימות לגוגל הושלם בהצלחה. אפשר לחזור להשתמש בבוט.",
+                            )
+                            payload = _build_oauth_callback_html(True)
+                        except Exception:
+                            payload = _build_oauth_callback_html(False, "שגיאה בהשלמת האימות")
+
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(payload)))
@@ -181,7 +224,7 @@ def authenticate_google_calendar(user_id: int | None = None):
     return build('calendar', 'v3', credentials=creds)
 
 
-def start_auth_flow():
+def start_auth_flow(user_id: int | None = None, chat_id: int | None = None):
     """Create an OAuth flow and return the authorization URL and flow object."""
     _start_oauth_callback_server()
     redirect_uri = _resolve_redirect_uri()
@@ -189,7 +232,11 @@ def start_auth_flow():
     flow = InstalledAppFlow.from_client_secrets_file(
         str(CREDENTIALS_FILE), SCOPES, **kwargs
     )
-    auth_url, _ = flow.authorization_url(prompt="consent")
+    state = secrets.token_urlsafe(24)
+    auth_url, _ = flow.authorization_url(prompt="consent", state=state)
+    if user_id is not None and chat_id is not None:
+        with _pending_auth_lock:
+            _pending_auth[state] = {"flow": flow, "user_id": user_id, "chat_id": chat_id}
     return auth_url, flow
 
 def finish_auth_flow(user_id: int, flow: InstalledAppFlow, code: str):
@@ -203,10 +250,7 @@ def finish_auth_flow(user_id: int, flow: InstalledAppFlow, code: str):
         flow.redirect_uri = redirect_uri
     flow.fetch_token(code=code)
     creds = flow.credentials
-    TOKEN_DIR.mkdir(exist_ok=True)
-    token_path = TOKEN_DIR / f"token_{user_id}.json"
-    with open(token_path, "w") as token_file:
-        token_file.write(creds.to_json())
+    _store_credentials(user_id, creds)
     return build('calendar', 'v3', credentials=creds)
 
 
