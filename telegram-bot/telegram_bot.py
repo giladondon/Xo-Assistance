@@ -109,7 +109,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             context.user_data["auth_flow"] = flow
             await update.message.reply_text(
-                f"👋 כדי להשתמש בבוט יש לאשר גישה ליומן:\n{auth_url}\nשלח לי את הקישור המלא או את הקוד שתקבל אחרי האישור."
+                f"👋 כדי להשתמש בבוט יש לאשר גישה ליומן:\n{auth_url}\n"
+                "בסיום האישור יופיע דף עם קוד להעתקה. הדבק/י כאן את הקוד.\n"
+                "אם בכל זאת מתקבלת שגיאה בדפדפן, פשוט העתיק/י את כתובת הדף המלאה ושלח/י אותה כאן."
             )
             return
 

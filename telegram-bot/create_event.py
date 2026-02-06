@@ -69,8 +69,8 @@ def _build_oauth_callback_html(code: str | None) -> bytes:
 </head>
 <body>
   <div class="card">
-    <h2>✅ Google authorization completed</h2>
-    <p>Copy this code and paste it back into Telegram.</p>
+    <h2>✅ ההתחברות לגוגל הושלמה</h2>
+    <p>העתק/י את הקוד הבא והדבק/י אותו בבוט בטלגרם.</p>
     <input id="oauthCode" class="code" value="{safe_code}" readonly />
     <button type="button" onclick="copyCode()">Copy code</button>
     <p id="copied"></p>
@@ -81,7 +81,7 @@ def _build_oauth_callback_html(code: str | None) -> bytes:
       field.select();
       field.setSelectionRange(0, 99999);
       navigator.clipboard.writeText(field.value).then(() => {{
-        document.getElementById('copied').innerText = 'Copied. You can return to Telegram now.';
+        document.getElementById('copied').innerText = 'הועתק בהצלחה. אפשר לחזור עכשיו לטלגרם.';
       }});
     }}
   </script>
@@ -99,10 +99,10 @@ def _start_oauth_callback_server() -> None:
         return
 
     parsed = urlparse(redirect_uri)
-    if parsed.hostname not in {"localhost", "127.0.0.1"}:
+    if parsed.scheme != "http":
         return
 
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    port = parsed.port or 80
     expected_path = parsed.path or "/"
 
     with _oauth_server_lock:
@@ -130,7 +130,7 @@ def _start_oauth_callback_server() -> None:
                 return
 
         try:
-            _oauth_server = ThreadingHTTPServer((parsed.hostname, port), OAuthCallbackHandler)
+            _oauth_server = ThreadingHTTPServer(("0.0.0.0", port), OAuthCallbackHandler)
             thread = threading.Thread(target=_oauth_server.serve_forever, daemon=True)
             thread.start()
         except OSError:
