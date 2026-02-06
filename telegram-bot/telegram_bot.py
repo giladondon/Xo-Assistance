@@ -268,22 +268,22 @@ async def send_schedule_for_date(
             )
             return
 
-        # Format event list and collect color emojis
+        # Format event list with exact time range and color emoji per event
         event_lines = []
-        event_emojis = []
         for event in events:
             summary = event.get("summary", "ללא כותרת")
+            emoji = emoji_for_color(event.get("colorId"))
             start_time = event["start"].get("dateTime")
             end_time = event["end"].get("dateTime")
             if start_time and end_time:
-                start_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
-                local_start = start_dt.astimezone(LOCAL_TZ)
-                time_str = local_start.strftime("%H:%M")
+                start_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00")).astimezone(LOCAL_TZ)
+                end_dt = datetime.fromisoformat(end_time.replace("Z", "+00:00")).astimezone(LOCAL_TZ)
+                time_str = f"{start_dt.strftime('%H:%M')}-{end_dt.strftime('%H:%M')}"
             else:
                 all_day = event["start"].get("date")
                 time_str = "אירוע יום שלם" if all_day else "זמן לא צוין"
-            event_lines.append(f"{time_str} - {summary}")
-            event_emojis.append(emoji_for_color(event.get("colorId")))
+            emoji_suffix = f" {emoji}" if emoji else ""
+            event_lines.append(f"{time_str} - {summary}{emoji_suffix}")
 
         # Load prompt and inject requested date
         date_str = target_date.strftime("%d/%m/%Y")
@@ -302,17 +302,6 @@ async def send_schedule_for_date(
 
         summary_text = response.choices[0].message.content
         summary_text = summary_text.replace("\n- ", "\n\n- ").strip()
-
-        # Append color emoji to each bullet line
-        lines = summary_text.splitlines()
-        idx = 0
-        for i, line in enumerate(lines):
-            if line.strip().startswith("-") and idx < len(event_emojis):
-                emoji = event_emojis[idx]
-                if emoji:
-                    lines[i] = f"{line} {emoji}"
-                idx += 1
-        summary_text = "\n".join(lines)
         await update.message.reply_text(summary_text)
 
     except Exception as e:
