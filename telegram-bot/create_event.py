@@ -25,19 +25,22 @@ TOKEN_DIR = BASE_DIR / "tokens"
 CALENDAR_PREF_PREFIX = "calendar_"
 
 
-def _resolve_redirect_uri() -> str | None:
-    """Return redirect URI from env or credentials.json.
+def _load_credentials_config() -> dict:
+    """Load Google OAuth client config from env var or fallback to file."""
+    raw = os.getenv("GOOGLE_CREDENTIALS_JSON")
+    if raw:
+        return json.loads(raw)
+    with open(CREDENTIALS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-    Priority is given to the ``GOOGLE_REDIRECT_URI`` environment variable. If it
-    is missing, the first URI from ``credentials.json`` (web or installed block)
-    is used. ``None`` is returned if neither source provides a URI.
-    """
+
+def _resolve_redirect_uri() -> str | None:
+    """Return redirect URI from env or credentials config."""
     env_uri = os.getenv("GOOGLE_REDIRECT_URI")
     if env_uri:
         return env_uri
     try:
-        with open(CREDENTIALS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = _load_credentials_config()
         for block in ("web", "installed"):
             uris = data.get(block, {}).get("redirect_uris")
             if uris:
@@ -95,8 +98,8 @@ def start_auth_flow():
     """Create an OAuth flow and return the authorization URL and flow object."""
     redirect_uri = _resolve_redirect_uri()
     kwargs = {"redirect_uri": redirect_uri} if redirect_uri else {}
-    flow = InstalledAppFlow.from_client_secrets_file(
-        str(CREDENTIALS_FILE), SCOPES, **kwargs
+    flow = InstalledAppFlow.from_client_config(
+        _load_credentials_config(), SCOPES, **kwargs
     )
     auth_url, _ = flow.authorization_url(prompt="consent")
     return auth_url, flow
