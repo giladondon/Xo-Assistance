@@ -36,9 +36,36 @@ load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ACCESS_CODE = os.getenv("BOT_ACCESS_CODE", "")
 
 BASE_DIR = Path(__file__).resolve().parent
 LOCAL_TZ = ZoneInfo("Asia/Jerusalem")
+TOKEN_DIR = BASE_DIR / "tokens"
+APPROVED_USERS_FILE = TOKEN_DIR / "approved_users.json"
+
+
+def load_approved_users() -> set:
+    if not APPROVED_USERS_FILE.exists():
+        return set()
+    try:
+        with open(APPROVED_USERS_FILE, "r") as f:
+            return set(json.load(f))
+    except (json.JSONDecodeError, OSError):
+        return set()
+
+
+def save_approved_user(user_id: int, bot_data: dict) -> None:
+    TOKEN_DIR.mkdir(exist_ok=True)
+    approved = bot_data.setdefault("approved_users", load_approved_users())
+    approved.add(user_id)
+    with open(APPROVED_USERS_FILE, "w") as f:
+        json.dump(list(approved), f)
+
+
+def is_user_approved(user_id: int, bot_data: dict) -> bool:
+    if "approved_users" not in bot_data:
+        bot_data["approved_users"] = load_approved_users()
+    return user_id in bot_data["approved_users"]
 
 with open(BASE_DIR / "notification_templates.json", "r", encoding="utf-8") as f:
     TEMPLATES = json.load(f)
@@ -80,6 +107,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data["user_id"] = update.effective_user.id
     user_id = context.bot_data["user_id"]
     text = update.message.text
+
+    if not is_user_approved(user_id, context.bot_data):
+        if text.strip() == ACCESS_CODE and ACCESS_CODE:
+            save_approved_user(user_id, context.bot_data)
+            await update.message.reply_text("✅ קוד אושר! ברוך הבא לבוט.")
+        else:
+            await update.message.reply_text("🔒 הבוט מוגן. אנא הכנס את קוד הגישה.")
+        return
 
     service = authenticate_google_calendar(user_id)
     if not service:
