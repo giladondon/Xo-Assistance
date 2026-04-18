@@ -1,9 +1,10 @@
 import os
 import json
+import asyncio
 import traceback
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
 
+import aiohttp.web as web
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
@@ -82,36 +83,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     service = authenticate_google_calendar(user_id)
     if not service:
-        pending_flow = context.user_data.get("auth_flow")
-        if pending_flow:
-            code = text.strip()
-            if "code=" in code or code.startswith("http"):
-                try:
-                    parsed = urlparse(code)
-                    code = parse_qs(parsed.query).get("code", [""])[0]
-                except Exception:
-                    code = ""
-            if not code:
-                await update.message.reply_text("❌ לא נמצא קוד הרשאה בהודעה.")
-                return
-            try:
-                service = finish_auth_flow(user_id, pending_flow, code)
-                context.user_data.pop("auth_flow", None)
-                await update.message.reply_text("✅ ההרשאה הושלמה! שלח את הפקודה שוב.")
-            except Exception as e:
-                await update.message.reply_text(f"❌ שגיאה בתהליך ההרשאה: {e}")
+        try:
+            auth_url = start_auth_flow(user_id)
+        except Exception as e:
+            await update.message.reply_text(f"❌ שגיאה בתהליך ההרשאה: {e}")
             return
-        else:
-            try:
-                auth_url, flow = start_auth_flow()
-            except Exception as e:
-                await update.message.reply_text(f"❌ שגיאה בתהליך ההרשאה: {e}")
-                return
-            context.user_data["auth_flow"] = flow
-            await update.message.reply_text(
-                f"👋 כדי להשתמש בבוט יש לאשר גישה ליומן:\n{auth_url}\nשלח לי את הקישור המלא או את הקוד שתקבל אחרי האישור."
-            )
-            return
+        context.bot_data.setdefault("pending_auth", {})[user_id] = update.effective_chat.id
+        await update.message.reply_text(
+            f"👋 כדי להשתמש בבוט יש לאשר גישה ליומן:\n{auth_url}\n\nלאחר האישור תקבל הודעה אוטומטית כאן."
+        )
+        return
 
     selection = context.user_data.get("calendar_selection")
     if selection:
@@ -389,12 +370,64 @@ async def check_event_changes(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat_id, text=f"❌ שגיאה בבדיקת אירועים: {e}")
 
 
+async def oauth_callback(request: web.Request) -> web.Response:
+    code = request.rel_url.query.get("code")
+    state = request.rel_url.query.get("state")
+
+    if not code or not state:
+        return web.Response(text="Missing parameters", status=400)
+
+    try:
+        user_id = int(state)
+        finish_auth_flow(user_id, code)
+
+        ptb_app = request.app["ptb_app"]
+        chat_id = ptb_app.bot_data.get("pending_auth", {}).get(user_id)
+        if chat_id:
+            await ptb_app.bot.send_message(
+                chat_id=chat_id,
+                text="✅ ההרשאה הושלמה! שלח את הפקודה שלך.",
+            )
+
+        return web.Response(
+            text="<html><body><h2>✅ ההרשאה הושלמה! תוכל לחזור לטלגרם.</h2></body></html>",
+            content_type="text/html",
+            charset="utf-8",
+        )
+    except Exception as e:
+        traceback.print_exc()
+        return web.Response(text=f"Error: {e}", status=500)
+
+
+async def run():
+    ptb_app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    ptb_app.job_queue.run_repeating(check_event_changes, interval=60, first=10)
+
+    aiohttp_app = web.Application()
+    aiohttp_app["ptb_app"] = ptb_app
+    aiohttp_app.router.add_get("/oauth/callback", oauth_callback)
+
+    runner = web.AppRunner(aiohttp_app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+    async with ptb_app:
+        await ptb_app.start()
+        await ptb_app.updater.start_polling()
+        print("🤖 הבוט מחובר לטלגרם ומחכה להודעות...")
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await ptb_app.updater.stop()
+            await ptb_app.stop()
+            await runner.cleanup()
+
+
 def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.job_queue.run_repeating(check_event_changes, interval=60, first=10)
-    print("🤖 הבוט מחובר לטלגרם ומחכה להודעות...")
-    app.run_polling()
+    asyncio.run(run())
 
 
 if __name__ == "__main__":

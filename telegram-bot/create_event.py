@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import InstalledAppFlow, Flow
 from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
 from google.auth.exceptions import RefreshError
@@ -94,25 +94,26 @@ def authenticate_google_calendar(user_id: int | None = None):
     return build('calendar', 'v3', credentials=creds)
 
 
-def start_auth_flow():
-    """Create an OAuth flow and return the authorization URL and flow object."""
+def start_auth_flow(user_id: int) -> str:
+    """Create a web OAuth flow and return the authorization URL."""
     redirect_uri = _resolve_redirect_uri()
-    kwargs = {"redirect_uri": redirect_uri} if redirect_uri else {}
-    flow = InstalledAppFlow.from_client_config(
-        _load_credentials_config(), SCOPES, **kwargs
+    flow = Flow.from_client_config(
+        _load_credentials_config(),
+        SCOPES,
+        redirect_uri=redirect_uri,
     )
-    auth_url, _ = flow.authorization_url(prompt="consent")
-    return auth_url, flow
+    auth_url, _ = flow.authorization_url(prompt="consent", state=str(user_id))
+    return auth_url
 
-def finish_auth_flow(user_id: int, flow: InstalledAppFlow, code: str):
+
+def finish_auth_flow(user_id: int, code: str):
     """Complete OAuth flow using the provided code and store credentials."""
     redirect_uri = _resolve_redirect_uri()
-    if redirect_uri:
-        # The flow already has a redirect URI from ``start_auth_flow``; passing it
-        # again to ``fetch_token`` results in oauthlib receiving duplicate
-        # parameters and raising a ``TypeError``. Ensure the stored redirect URI
-        # is used and fetch the token without re-supplying it.
-        flow.redirect_uri = redirect_uri
+    flow = Flow.from_client_config(
+        _load_credentials_config(),
+        SCOPES,
+        redirect_uri=redirect_uri,
+    )
     flow.fetch_token(code=code)
     creds = flow.credentials
     TOKEN_DIR.mkdir(exist_ok=True)
