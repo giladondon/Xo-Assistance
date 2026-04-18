@@ -15,7 +15,7 @@ from telegram.ext import (
 )
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-from openai import OpenAI
+from anthropic import Anthropic
 
 from create_event import (
     authenticate_google_calendar,
@@ -35,7 +35,7 @@ from helpers.colors import emoji_for_color
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ai_client = Anthropic()
 ACCESS_CODE = os.getenv("BOT_ACCESS_CODE", "")
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -184,16 +184,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today = datetime.now().strftime("%Y-%m-%d")
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        resp = client.chat.completions.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"התאריך היום הוא {today}. הפקודה היא: {text}"}
-            ],
-            temperature=0
+        resp = ai_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=512,
+            system=system_prompt,
+            messages=[{"role": "user", "content": f"התאריך היום הוא {today}. הפקודה היא: {text}"}],
+            temperature=0,
         )
-        data = json.loads(resp.choices[0].message.content)
+        data = json.loads(resp.content[0].text)
 
         action = data.get("action")
         summary = data.get("summary")
@@ -311,15 +309,14 @@ async def send_schedule_for_date(
         prompt = prompt_template.replace("[תאריך]", date_str)
         full_prompt = prompt + "\n" + "\n\n".join(event_lines)
 
-        # GPT call
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        response = client.chat.completions.create(
-            model="gpt-4",
+        response = ai_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
             messages=[{"role": "user", "content": full_prompt}],
-            temperature=0.3
+            temperature=0.3,
         )
 
-        summary_text = response.choices[0].message.content
+        summary_text = response.content[0].text
         summary_text = summary_text.replace("\n- ", "\n\n- ").strip()
         await update.message.reply_text(summary_text)
 

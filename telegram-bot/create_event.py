@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta
-import re
 import os
 import json
 from pathlib import Path
@@ -9,7 +8,6 @@ from google_auth_oauthlib.flow import InstalledAppFlow, Flow
 from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
 from google.auth.exceptions import RefreshError
-from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -49,12 +47,6 @@ def _resolve_redirect_uri() -> str | None:
         pass
     return None
 
-
-# Resolve redirect URI at call time to capture late environment changes
-
-
-# Set up OPENAI API
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def authenticate_google_calendar(user_id: int | None = None):
     """Return an authenticated Google Calendar service for the given user.
@@ -251,34 +243,6 @@ def update_event(service, event_id, updates, calendar_id="primary"):
         calendarId=calendar_id, eventId=event_id, body=event
     ).execute()
     print("✅ האירוע עודכן בהצלחה.")
-
-# Clean Json File
-def extract_json(text):
-    match = re.search(r"\{.*}", text, re.DOTALL)
-    if match:
-        return json.loads(match.group(0))
-    else:
-        raise ValueError("❌ לא נמצא JSON תקני")
-
-# Parse text with GPT module
-def parse_with_gpt(text):
-    with open(BASE_DIR / "xo_assistance_prompt.txt", "r", encoding="utf-8") as f:
-        system_prompt = f.read()
-
-    today = datetime.today().strftime("%Y-%m-%d")
-
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"התאריך היום הוא {today}. הפקודה היא: {text}"}
-        ],
-    )
-
-    response_text = response.choices[0].message.content
-    parsed = extract_json(response_text)
-
-    return parsed
 
 # Main program flow
 if __name__ == "__main__":
