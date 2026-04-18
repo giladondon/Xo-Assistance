@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import asyncio
 import traceback
@@ -69,6 +70,13 @@ def is_user_approved(user_id: int, bot_data: dict) -> bool:
 
 with open(BASE_DIR / "notification_templates.json", "r", encoding="utf-8") as f:
     TEMPLATES = json.load(f)
+
+
+def extract_json(text: str) -> dict:
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        return json.loads(match.group(0))
+    raise ValueError(f"No JSON found in response: {text[:200]}")
 
 
 def render_message(key, **kwargs):
@@ -191,7 +199,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             messages=[{"role": "user", "content": f"התאריך היום הוא {today}. הפקודה היא: {text}"}],
             temperature=0,
         )
-        data = json.loads(resp.content[0].text)
+        data = extract_json(resp.content[0].text)
 
         action = data.get("action")
         summary = data.get("summary")
