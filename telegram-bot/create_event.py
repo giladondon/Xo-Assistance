@@ -94,8 +94,8 @@ def authenticate_google_calendar(user_id: int | None = None):
     return build('calendar', 'v3', credentials=creds)
 
 
-def start_auth_flow(user_id: int) -> str:
-    """Create a web OAuth flow and return the authorization URL."""
+def start_auth_flow(user_id: int):
+    """Create a web OAuth flow and return (auth_url, flow)."""
     redirect_uri = _resolve_redirect_uri()
     flow = Flow.from_client_config(
         _load_credentials_config(),
@@ -103,17 +103,11 @@ def start_auth_flow(user_id: int) -> str:
         redirect_uri=redirect_uri,
     )
     auth_url, _ = flow.authorization_url(prompt="consent", state=str(user_id))
-    return auth_url
+    return auth_url, flow
 
 
-def finish_auth_flow(user_id: int, code: str):
-    """Complete OAuth flow using the provided code and store credentials."""
-    redirect_uri = _resolve_redirect_uri()
-    flow = Flow.from_client_config(
-        _load_credentials_config(),
-        SCOPES,
-        redirect_uri=redirect_uri,
-    )
+def finish_auth_flow(user_id: int, flow: Flow, code: str):
+    """Complete OAuth flow using the original flow object and store credentials."""
     flow.fetch_token(code=code)
     creds = flow.credentials
     TOKEN_DIR.mkdir(exist_ok=True)

@@ -84,11 +84,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     service = authenticate_google_calendar(user_id)
     if not service:
         try:
-            auth_url = start_auth_flow(user_id)
+            auth_url, flow = start_auth_flow(user_id)
         except Exception as e:
             await update.message.reply_text(f"❌ שגיאה בתהליך ההרשאה: {e}")
             return
-        context.bot_data.setdefault("pending_auth", {})[user_id] = update.effective_chat.id
+        context.bot_data.setdefault("pending_auth", {})[user_id] = {
+            "chat_id": update.effective_chat.id,
+            "flow": flow,
+        }
         await update.message.reply_text(
             f"👋 כדי להשתמש בבוט יש לאשר גישה ליומן:\n{auth_url}\n\nלאחר האישור תקבל הודעה אוטומטית כאן."
         )
@@ -379,10 +382,13 @@ async def oauth_callback(request: web.Request) -> web.Response:
 
     try:
         user_id = int(state)
-        finish_auth_flow(user_id, code)
-
         ptb_app = request.app["ptb_app"]
-        chat_id = ptb_app.bot_data.get("pending_auth", {}).get(user_id)
+        pending = ptb_app.bot_data.get("pending_auth", {}).pop(user_id, {})
+        flow = pending.get("flow")
+        chat_id = pending.get("chat_id")
+
+        finish_auth_flow(user_id, flow, code)
+
         if chat_id:
             await ptb_app.bot.send_message(
                 chat_id=chat_id,
